@@ -8,6 +8,11 @@ tidy:
 fmt:
 	gofmt -w ./cmd ./internal
 
+.PHONY: fmt-local
+fmt-local:
+	go mod tidy
+	gofmt -w ./cmd ./internal
+
 .PHONY: test
 test:
 	go test ./...

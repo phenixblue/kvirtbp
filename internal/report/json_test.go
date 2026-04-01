@@ -68,7 +68,7 @@ func TestWriteJSONOmitsEmptyMetadataFields(t *testing.T) {
 		Metadata: &checks.MetadataRun{
 			Engine: "go",
 		},
-		Summary: checks.Summary{Total: 0, Passed: 0, Failed: 0, Info: 0, Warning: 0, Error: 0},
+		Summary:  checks.Summary{Total: 0, Passed: 0, Failed: 0, Info: 0, Warning: 0, Error: 0},
 		Findings: []checks.Finding{},
 	}
 

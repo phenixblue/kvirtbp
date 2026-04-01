@@ -46,14 +46,7 @@ jobs:
           HOMEBREW_TAP_NAME: homebrew-tap
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-      - name: Generate release SBOM for dist/
-        uses: anchore/sbom-action@v0
-        with:
-          path: ./dist
-          format: spdx-json
-          output-file: ./dist/release.sbom.spdx.json
-
-      - name: Attest release SBOM
+      - name: Attest release checksums
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: ./dist/release.sbom.spdx.json
+          subject-path: ./dist/checksums.txt

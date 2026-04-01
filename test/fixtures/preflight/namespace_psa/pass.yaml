@@ -1,0 +1,7 @@
+namespaces:
+  - name: tenant-a
+    labels:
+      pod-security.kubernetes.io/enforce: baseline
+  - name: tenant-b
+    labels:
+      pod-security.kubernetes.io/enforce: restricted

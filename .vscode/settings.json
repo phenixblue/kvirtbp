@@ -1,0 +1,10 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "go": true,
+        "gofmt": true,
+        "make": true,
+        "./bin/kvirtbp": true,
+        "git rm": true,
+        "true": true
+    }
+}

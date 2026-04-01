@@ -1,0 +1,68 @@
+name: e2e-manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: E2E profile to execute
+        required: true
+        default: pass
+        type: choice
+        options:
+          - pass
+          - fail
+      engine:
+        description: Scanner engine
+        required: true
+        default: go
+        type: choice
+        options:
+          - go
+          - rego
+      kubevirtVersion:
+        description: KubeVirt release version
+        required: true
+        default: v1.2.2
+        type: string
+      vmCount:
+        description: Number of minimal test VMs to create
+        required: true
+        default: "3"
+        type: string
+      recreateCluster:
+        description: Delete existing kind cluster before setup
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install kind
+        run: |
+          go install sigs.k8s.io/kind@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run E2E kind + KubeVirt scan
+        env:
+          KUBEVIRT_VERSION: ${{ inputs.kubevirtVersion }}
+          SCAN_ENGINE: ${{ inputs.engine }}
+          VM_COUNT: ${{ inputs.vmCount }}
+          RECREATE_CLUSTER: ${{ inputs.recreateCluster }}
+        run: bash ./scripts/e2e_kind_scan.sh ${{ inputs.profile }}

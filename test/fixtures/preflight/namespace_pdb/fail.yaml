@@ -1,0 +1,5 @@
+namespaces:
+  - name: tenant-a
+  - name: tenant-b
+pdbNamespaces:
+  - tenant-a

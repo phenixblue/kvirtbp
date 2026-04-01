@@ -37,3 +37,19 @@ e2e-kind-fail:
 .PHONY: lint
 lint:
 	golangci-lint run
+
+.PHONY: bench
+bench:
+	go test ./internal/checks ./internal/report -bench=. -benchmem -run='^$$'
+
+.PHONY: perf
+perf:
+	go test ./internal/checks ./internal/report -run 'LatencyBudget|Scale' -v
+
+.PHONY: release-snapshot
+release-snapshot:
+	goreleaser release --snapshot --clean --skip=publish
+
+.PHONY: release-local
+release-local:
+	goreleaser release --snapshot --clean --skip=publish,sign

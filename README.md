@@ -34,6 +34,45 @@ make build
 ./bin/kvirtbp runbook --id RUNBOOK-SEC-RBAC-001
 ```
 
+## Homebrew
+
+Install from the project tap:
+
+```bash
+brew tap phenixblue/tap
+brew install kvirtbp
+```
+
+Homebrew formula publishing is handled by GoReleaser on version tags (`v*`) via `.github/workflows/release.yml`.
+
+Tap/release prerequisites:
+
+- Tap repository exists and is writable (default target: `phenixblue/homebrew-tap`)
+- GitHub Actions secret `HOMEBREW_TAP_GITHUB_TOKEN` is configured with repo write access to the tap repository
+- Optional override environment variables for GoReleaser:
+	- `HOMEBREW_TAP_OWNER`
+	- `HOMEBREW_TAP_NAME`
+
+To test release packaging without publishing:
+
+```bash
+make release-snapshot
+```
+
+For local dry runs that include SBOM generation and Homebrew formula output but skip signing:
+
+```bash
+make release-local
+```
+
+Release mode comparison:
+
+| Mode | Command/Trigger | Publish GitHub Release | Publish Homebrew Tap | Generate SBOM | Sign Artifacts |
+| --- | --- | --- | --- | --- | --- |
+| Local snapshot | `make release-snapshot` | No | No | Yes | Yes (requires local cosign auth) |
+| Local packaging dry run | `make release-local` | No | No | Yes | No |
+| CI release | Push tag `v*` | Yes | Yes | Yes | Yes (OIDC in Actions) |
+
 ## Configuration
 
 Environment variables use the `KVIRTBP_` prefix.
@@ -86,6 +125,13 @@ Top-level JSON report metadata includes scan execution context:
 - `metadata.kubeContext` and `metadata.kubeconfigProvided`
 
 Runbook mappings are documented in [docs/runbooks.md](docs/runbooks.md).
+
+Additional documentation:
+
+- [docs/check-catalog.md](docs/check-catalog.md)
+- [docs/policy-authoring.md](docs/policy-authoring.md)
+- [docs/operations.md](docs/operations.md)
+- [docs/workflows.md](docs/workflows.md)
 
 Policy bundle metadata (optional `metadata.json`):
 

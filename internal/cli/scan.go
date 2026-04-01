@@ -43,6 +43,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 	var policyFile string
 	var policyBundle string
 	var showRunbook bool
+	var waiverFile string
 
 	cmd := &cobra.Command{
 		Use:   "scan",
@@ -104,6 +105,15 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 				})...)
 			}
 			result.Findings = checks.ApplyBaselineAssessments(result.Findings)
+
+			if waiverFile != "" {
+				waivers, waiverErr := checks.LoadWaivers(waiverFile)
+				if waiverErr != nil {
+					return fmt.Errorf("loading waivers: %w", waiverErr)
+				}
+				result.Findings = checks.ApplyWaivers(result.Findings, waivers)
+			}
+
 			result.Findings = checks.FilterFindings(result.Findings, filter)
 			if showRunbook {
 				result.Findings = annotateRunbookHints(result.Findings)
@@ -117,6 +127,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 				DurationMillis:            time.Since(start).Milliseconds(),
 				PolicyFile:                policyFile,
 				PolicyBundle:              policyBundle,
+				WaiverFile:                waiverFile,
 				KubeContext:               *kubeContext,
 				KubeconfigProvided:        *kubeconfigPath != "",
 			})
@@ -157,6 +168,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "Path to Rego policy file (used with --engine rego)")
 	cmd.Flags().StringVar(&policyBundle, "policy-bundle", "", "Path to Rego policy bundle directory (used with --engine rego)")
 	cmd.Flags().BoolVar(&showRunbook, "show-runbook", false, "Append runbook hint for failing findings with remediation IDs")
+	cmd.Flags().StringVar(&waiverFile, "waiver-file", "", "Path to waiver YAML file (checks matching a waiver are skipped from failure counting)")
 
 	return cmd
 }
@@ -207,6 +219,7 @@ type runMetadataInput struct {
 	DurationMillis            int64
 	PolicyFile                string
 	PolicyBundle              string
+	WaiverFile                string
 	KubeContext               string
 	KubeconfigProvided        bool
 }
@@ -221,6 +234,7 @@ func buildRunMetadata(in runMetadataInput) *checks.MetadataRun {
 		DurationMillis:            in.DurationMillis,
 		PolicyFile:                in.PolicyFile,
 		PolicyBundle:              in.PolicyBundle,
+		WaiverFile:                in.WaiverFile,
 		EvaluationMode:            "hybrid",
 		KubeContext:               in.KubeContext,
 		KubeconfigProvided:        in.KubeconfigProvided,

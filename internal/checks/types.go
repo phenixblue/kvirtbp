@@ -32,25 +32,30 @@ type Metadata struct {
 }
 
 type Finding struct {
-	CheckID       string            `json:"checkId"`
-	Title         string            `json:"title"`
-	Category      string            `json:"category"`
-	Severity      Severity          `json:"severity"`
-	Impact        Impact            `json:"impact,omitempty"`
-	Confidence    Confidence        `json:"confidence,omitempty"`
-	Pass          bool              `json:"pass"`
-	ReasonCode    string            `json:"reasonCode,omitempty"`
-	Message       string            `json:"message"`
-	ResourceRef   string            `json:"resourceRef,omitempty"`
-	Evidence      map[string]string `json:"evidence,omitempty"`
-	RemediationID string            `json:"remediationId,omitempty"`
-	Remediation   string            `json:"remediation,omitempty"`
+	CheckID             string            `json:"checkId"`
+	Title               string            `json:"title"`
+	Category            string            `json:"category"`
+	Severity            Severity          `json:"severity"`
+	Impact              Impact            `json:"impact,omitempty"`
+	Confidence          Confidence        `json:"confidence,omitempty"`
+	Pass                bool              `json:"pass"`
+	Waived              bool              `json:"waived,omitempty"`
+	WaiverJustification string            `json:"waiverJustification,omitempty"`
+	WaiverOwner         string            `json:"waiverOwner,omitempty"`
+	WaiverExpires       string            `json:"waiverExpires,omitempty"`
+	ReasonCode          string            `json:"reasonCode,omitempty"`
+	Message             string            `json:"message"`
+	ResourceRef         string            `json:"resourceRef,omitempty"`
+	Evidence            map[string]string `json:"evidence,omitempty"`
+	RemediationID       string            `json:"remediationId,omitempty"`
+	Remediation         string            `json:"remediation,omitempty"`
 }
 
 type Summary struct {
 	Total   int `json:"total"`
 	Passed  int `json:"passed"`
 	Failed  int `json:"failed"`
+	Waived  int `json:"waived"`
 	Info    int `json:"info"`
 	Warning int `json:"warning"`
 	Error   int `json:"error"`
@@ -72,6 +77,7 @@ type MetadataRun struct {
 	DurationMillis            int64    `json:"durationMillis,omitempty"`
 	PolicyFile                string   `json:"policyFile,omitempty"`
 	PolicyBundle              string   `json:"policyBundle,omitempty"`
+	WaiverFile                string   `json:"waiverFile,omitempty"`
 	EvaluationMode            string   `json:"evaluationMode,omitempty"`
 	KubeContext               string   `json:"kubeContext,omitempty"`
 	KubeconfigProvided        bool     `json:"kubeconfigProvided,omitempty"`
@@ -88,7 +94,9 @@ const (
 func Summarize(findings []Finding) Summary {
 	s := Summary{Total: len(findings)}
 	for _, f := range findings {
-		if f.Pass {
+		if f.Waived {
+			s.Waived++
+		} else if f.Pass {
 			s.Passed++
 		} else {
 			s.Failed++
@@ -111,7 +119,7 @@ func ExitCode(result RunResult) int {
 	hasViolation := false
 
 	for _, f := range result.Findings {
-		if f.Pass {
+		if f.Pass || f.Waived {
 			continue
 		}
 		hasViolation = true

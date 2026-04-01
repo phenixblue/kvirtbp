@@ -5,6 +5,10 @@
         "make": true,
         "./bin/kvirtbp": true,
         "git rm": true,
-        "true": true
-    }
+        "true": true,
+        "goreleaser": true,
+        "git rev-parse": true,
+        "git tag": true
+    },
+    "makefile.configureOnOpen": false
 }

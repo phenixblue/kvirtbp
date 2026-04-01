@@ -38,7 +38,7 @@ func TestWriteTableIncludesSummaryAndTriage(t *testing.T) {
 
 	out := buf.String()
 	for _, want := range []string{
-		"Summary: total=2 passed=1 failed=1 info=1 warning=1 error=0",
+		"Summary: total=2 passed=1 failed=1 waived=0 info=1 warning=1 error=0",
 		"Failing reason codes:",
 		"sec.rbac.permissions.missing: 1",
 		"Remediation IDs:",

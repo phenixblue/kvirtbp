@@ -16,6 +16,7 @@ func WriteTable(out io.Writer, result checks.RunResult) error {
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("24")).Padding(0, 1).Align(lipgloss.Center)
 	passStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true).Padding(0, 1)
 	failStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).Padding(0, 1)
+	waivedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Padding(0, 1)
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	baseCellStyle := lipgloss.NewStyle().Padding(0, 1)
 	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -52,11 +53,17 @@ func WriteTable(out io.Writer, result checks.RunResult) error {
 				}
 				return mutedStyle.Padding(0, 1).Align(lipgloss.Center)
 			case 3:
+				if f.Waived {
+					return waivedStyle.Align(lipgloss.Center)
+				}
 				if f.Pass {
 					return passStyle.Align(lipgloss.Center)
 				}
 				return failStyle.Align(lipgloss.Center)
 			default:
+				if f.Waived {
+					return baseCellStyle.Foreground(lipgloss.Color("11"))
+				}
 				if f.Pass {
 					return baseCellStyle.Foreground(lipgloss.Color("7"))
 				}
@@ -69,8 +76,19 @@ func WriteTable(out io.Writer, result checks.RunResult) error {
 
 	for _, f := range result.Findings {
 		passText := "FAIL"
-		if f.Pass {
+		if f.Waived {
+			passText = "WAIVED"
+		} else if f.Pass {
 			passText = "PASS"
+		}
+
+		msg := f.Message
+		if f.Waived && f.WaiverJustification != "" {
+			if f.WaiverExpires != "" {
+				msg = fmt.Sprintf("%s [waived by %s until %s: %s]", f.Message, f.WaiverOwner, f.WaiverExpires, f.WaiverJustification)
+			} else {
+				msg = fmt.Sprintf("%s [waived by %s: %s]", f.Message, f.WaiverOwner, f.WaiverJustification)
+			}
 		}
 
 		tbl.Row(
@@ -78,10 +96,10 @@ func WriteTable(out io.Writer, result checks.RunResult) error {
 			f.Category,
 			strings.ToUpper(string(f.Severity)),
 			passText,
-			f.Message,
+			msg,
 		)
 
-		if f.Pass {
+		if f.Pass || f.Waived {
 			continue
 		}
 		if f.ReasonCode != "" {
@@ -98,7 +116,7 @@ func WriteTable(out io.Writer, result checks.RunResult) error {
 	if _, err := fmt.Fprintln(out, ""); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "%s\n", titleStyle.Render(fmt.Sprintf("Summary: total=%d passed=%d failed=%d info=%d warning=%d error=%d", result.Summary.Total, result.Summary.Passed, result.Summary.Failed, result.Summary.Info, result.Summary.Warning, result.Summary.Error))); err != nil {
+	if _, err := fmt.Fprintf(out, "%s\n", titleStyle.Render(fmt.Sprintf("Summary: total=%d passed=%d failed=%d waived=%d info=%d warning=%d error=%d", result.Summary.Total, result.Summary.Passed, result.Summary.Failed, result.Summary.Waived, result.Summary.Info, result.Summary.Warning, result.Summary.Error))); err != nil {
 		return err
 	}
 

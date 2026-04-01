@@ -47,8 +47,26 @@ jobs:
       - name: Test
         run: go test ./...
 
-  build:
+  perf:
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Tidy
+        run: go mod tidy
+
+      - name: Performance budget tests
+        run: make perf
+
+  build:
+    needs: perf
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

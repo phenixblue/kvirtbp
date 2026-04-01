@@ -10,3 +10,5 @@ I want to build a plan for creating a Golang based CLI tool that allows a user t
 - Capture snap type tarball of information from a running cluster
 - Ability to watch web app to import/display captured info from snap. Should be a visual representation of the cluster that a user can click through and view at any level
 - Kind cluster setup wirth KubeVirt and VM's deployed for testing
+- Add infro from Portworx checks/recs
+- Add brew tap/packaging

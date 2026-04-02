@@ -45,6 +45,8 @@ brew install kvirtbp
 
 Homebrew formula publishing is handled by GoReleaser on version tags (`v*`) via `.github/workflows/release.yml`.
 
+See [docs/homebrew.md](docs/homebrew.md) for upgrade, uninstall, version pinning, integrity verification, and tap maintenance details.
+
 Tap/release prerequisites:
 
 - Tap repository exists and is writable (default target: `phenixblue/homebrew-tap`)

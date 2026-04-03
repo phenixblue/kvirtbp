@@ -78,3 +78,58 @@ func TestCheckedInBundleMatchesDefaultPolicyForCategoryIDMismatch(t *testing.T) 
 		t.Fatalf("expected equivalent normalized findings\ndefault=%+v\nbundle=%+v", eval.NormalizeForComparison(defaultResult), eval.NormalizeForComparison(bundleResult))
 	}
 }
+
+func TestFullBundleProducesCatalogAndClusterFindings(t *testing.T) {
+	registry := []checks.Check{
+		bundleEquivalenceCheck{meta: checks.Metadata{ID: "prod-baseline-kubevirt-readiness", Title: "Production Baseline", Category: "production-readiness", Severity: checks.SeverityInfo}},
+		bundleEquivalenceCheck{meta: checks.Metadata{ID: "sec-baseline-rbac-safety", Title: "Security Baseline", Category: "security", Severity: checks.SeverityInfo}},
+		bundleEquivalenceCheck{meta: checks.Metadata{ID: "avail-baseline-workload-resilience", Title: "Availability Baseline", Category: "availability", Severity: checks.SeverityInfo}},
+	}
+
+	snap := healthyClusterSnapshot()
+	bundlePath := filepath.Join("..", "..", "policy")
+	ctx := context.Background()
+
+	result, err := regoengine.New().Evaluate(ctx, eval.RunRequest{
+		Registry:        registry,
+		PolicyBundle:    bundlePath,
+		ClusterSnapshot: &snap,
+	})
+	if err != nil {
+		t.Fatalf("full bundle evaluator failed: %v", err)
+	}
+
+	byID := make(map[string]checks.Finding, len(result.Findings))
+	for _, f := range result.Findings {
+		byID[f.CheckID] = f
+	}
+
+	// Catalog findings must be present.
+	catalogIDs := []string{"prod-baseline-kubevirt-readiness", "sec-baseline-rbac-safety", "avail-baseline-workload-resilience"}
+	for _, id := range catalogIDs {
+		if _, ok := byID[id]; !ok {
+			t.Errorf("full bundle missing catalog finding %q", id)
+		}
+	}
+
+	// Key cluster findings must be present and passing.
+	clusterPassIDs := []string{
+		"kubevirt-api-availability",
+		"prod-node-inventory",
+		"avail-control-plane-ha",
+		"sec-namespace-psa-enforce",
+		"sec-networkpolicy-coverage",
+		"prod-namespace-guardrails-coverage",
+		"avail-namespace-pdb-coverage",
+	}
+	for _, id := range clusterPassIDs {
+		f, ok := byID[id]
+		if !ok {
+			t.Errorf("full bundle missing cluster finding %q", id)
+			continue
+		}
+		if !f.Pass {
+			t.Errorf("full bundle cluster finding %q should pass on healthy snapshot, got fail: %s", id, f.Message)
+		}
+	}
+}

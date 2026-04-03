@@ -218,3 +218,42 @@ func TestBuildKubeVirtOperatorHealthFinding(t *testing.T) {
 		t.Fatalf("expected kubevirt operator health to fail, got reason=%s", fail.ReasonCode)
 	}
 }
+
+func TestParseResourceType_CoreGroup(t *testing.T) {
+	gvr, err := parseResourceType("v1/ConfigMap")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gvr.Group != "" || gvr.Version != "v1" || gvr.Resource != "configmap" {
+		t.Errorf("unexpected gvr: %+v", gvr)
+	}
+}
+
+func TestParseResourceType_NamedGroup(t *testing.T) {
+	gvr, err := parseResourceType("apps/v1/Deployment")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gvr.Group != "apps" || gvr.Version != "v1" || gvr.Resource != "deployment" {
+		t.Errorf("unexpected gvr: %+v", gvr)
+	}
+}
+
+func TestParseResourceType_CRD(t *testing.T) {
+	gvr, err := parseResourceType("kubevirt.io/v1/VirtualMachine")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gvr.Group != "kubevirt.io" || gvr.Version != "v1" || gvr.Resource != "virtualmachine" {
+		t.Errorf("unexpected gvr: %+v", gvr)
+	}
+}
+
+func TestParseResourceType_Invalid(t *testing.T) {
+	cases := []string{"", "noSlash", "a/b/c/d"}
+	for _, c := range cases {
+		if _, err := parseResourceType(c); err == nil {
+			t.Errorf("expected error for %q", c)
+		}
+	}
+}

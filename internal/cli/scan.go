@@ -11,7 +11,7 @@ import (
 	"github.com/phenixblue/kvirtbp/internal/checks"
 	"github.com/phenixblue/kvirtbp/internal/eval"
 	"github.com/phenixblue/kvirtbp/internal/eval/goeval"
-	"github.com/phenixblue/kvirtbp/internal/eval/rego"
+	regoengine "github.com/phenixblue/kvirtbp/internal/eval/rego"
 	"github.com/phenixblue/kvirtbp/internal/kube"
 	"github.com/phenixblue/kvirtbp/internal/report"
 	"github.com/phenixblue/kvirtbp/internal/runbook"
@@ -44,6 +44,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 	var policyBundle string
 	var showRunbook bool
 	var waiverFile string
+	var resourceTypes []string
 
 	cmd := &cobra.Command{
 		Use:   "scan",
@@ -75,34 +76,50 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 				return err
 			}
 
-			result, err := evaluator.Evaluate(ctx, eval.RunRequest{
-				Registry:     checks.DefaultChecks(),
-				Filter:       filter,
-				PolicyFile:   policyFile,
-				PolicyBundle: policyBundle,
-			})
-			if err != nil {
-				return err
+			// Merge resource types from --resource flag and bundle metadata.
+			mergedResourceTypes := append([]string(nil), resourceTypes...)
+			if policyBundle != "" {
+				bundleResources, err := regoengine.ResourceTypesFromBundle(policyBundle)
+				if err != nil {
+					return fmt.Errorf("reading bundle resource types: %w", err)
+				}
+				mergedResourceTypes = mergeResourceTypes(mergedResourceTypes, bundleResources)
+			}
+
+			preflightOpts := kube.PreflightOptions{
+				IncludeNamespaces: includeNamespaces,
+				ExcludeNamespaces: excludeNamespaces,
+				ResourceTypes:     mergedResourceTypes,
 			}
 
 			clients, kubeErr := kube.NewClients(kube.Options{
 				KubeconfigPath: *kubeconfigPath,
 				Context:        *kubeContext,
 			})
+
+			var snap kube.ClusterSnapshot
 			if kubeErr != nil {
-				result.Findings = append(result.Findings, checks.Finding{
-					CheckID:  "cluster-connectivity",
-					Title:    "Cluster Connectivity",
-					Category: "production-readiness",
-					Severity: checks.SeverityWarning,
-					Pass:     false,
-					Message:  fmt.Sprintf("unable to initialize Kubernetes client: %v", kubeErr),
-				})
+				snap = kube.DegradedSnapshot(preflightOpts)
 			} else {
-				result.Findings = append(result.Findings, kube.BuildPreflightFindingsWithOptions(ctx, clients, kube.PreflightOptions{
-					IncludeNamespaces: includeNamespaces,
-					ExcludeNamespaces: excludeNamespaces,
-				})...)
+				snap = kube.BuildClusterSnapshot(ctx, clients, preflightOpts)
+			}
+
+			result, err := evaluator.Evaluate(ctx, eval.RunRequest{
+				Registry:        checks.DefaultChecks(),
+				Filter:          filter,
+				PolicyFile:      policyFile,
+				PolicyBundle:    policyBundle,
+				ClusterSnapshot: &snap,
+			})
+			if err != nil {
+				return err
+			}
+
+			// The Go engine produces cluster findings via BuildPreflightFindingsFromSnapshot.
+			// The Rego engine is self-contained: it receives input.cluster and handles
+			// all checks (catalog + cluster) entirely within its policy.
+			if engineName != "rego" {
+				result.Findings = append(result.Findings, kube.BuildPreflightFindingsFromSnapshot(snap)...)
 			}
 			result.Findings = checks.ApplyBaselineAssessments(result.Findings)
 
@@ -169,6 +186,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 	cmd.Flags().StringVar(&policyBundle, "policy-bundle", "", "Path to Rego policy bundle directory (used with --engine rego)")
 	cmd.Flags().BoolVar(&showRunbook, "show-runbook", false, "Append runbook hint for failing findings with remediation IDs")
 	cmd.Flags().StringVar(&waiverFile, "waiver-file", "", "Path to waiver YAML file (checks matching a waiver are skipped from failure counting)")
+	cmd.Flags().StringSliceVar(&resourceTypes, "resource", nil, "Additional Kubernetes resource types to fetch and expose to Rego as input.cluster.resources (format: VERSION/RESOURCE or GROUP/VERSION/RESOURCE, e.g. v1/configmaps,apps/v1/deployments)")
 
 	return cmd
 }
@@ -204,10 +222,23 @@ func getEvaluator(name string) (eval.Evaluator, error) {
 	case "", "go":
 		return goeval.New(), nil
 	case "rego":
-		return rego.New(), nil
+		return regoengine.New(), nil
 	default:
 		return nil, fmt.Errorf("unsupported evaluator engine: %s", name)
 	}
+}
+
+// mergeResourceTypes returns a deduplicated union of a and b.
+func mergeResourceTypes(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, rt := range append(a, b...) {
+		if _, ok := seen[rt]; !ok {
+			seen[rt] = struct{}{}
+			out = append(out, rt)
+		}
+	}
+	return out
 }
 
 type runMetadataInput struct {

@@ -1,0 +1,9 @@
+{
+  "id": "preflight",
+  "title": "KubeVirt Baseline Preflight Policy",
+  "description": "Cluster-level preflight checks for connectivity, discovery, API availability, operator health, node inventory, control-plane HA, namespace security posture, network segmentation, resource guardrails, disruption budgets, and RBAC permissions.",
+  "version": "0.1.0",
+  "category": "preflight",
+  "engine": "rego",
+  "entrypoint": "data.kvirtbp.findings"
+}

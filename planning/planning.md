@@ -12,3 +12,8 @@ I want to build a plan for creating a Golang based CLI tool that allows a user t
 - Kind cluster setup wirth KubeVirt and VM's deployed for testing
 - Add infro from Portworx checks/recs
 - Add brew tap/packaging
+- Add collector concept
+    - default collector is "kubernetes" - can get any k8s resource
+    - custom collectors
+        - node-os-collector - can deploy a priviledged pod to nodes and mount the PID/Network namespace to get info from the node OS level
+        - other custom collectors, pattern should be depoy custom pod to cluster that runs and collects information and adds that to the OPA/Rego database in JSON format

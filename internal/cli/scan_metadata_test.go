@@ -60,3 +60,37 @@ func TestClusterContextHashDeterministic(t *testing.T) {
 		t.Fatalf("expected different hash for different kubeconfigProvided value, got %s", c)
 	}
 }
+
+func TestMergeResourceTypes_Dedup(t *testing.T) {
+	got := mergeResourceTypes([]string{"v1/ConfigMap", "apps/v1/Deployment"}, []string{"apps/v1/Deployment", "v1/Pod"})
+	want := []string{"v1/ConfigMap", "apps/v1/Deployment", "v1/Pod"}
+	if len(got) != len(want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Fatalf("want[%d]=%s got[%d]=%s", i, v, i, got[i])
+		}
+	}
+}
+
+func TestMergeResourceTypes_EmptyInputs(t *testing.T) {
+	if got := mergeResourceTypes(nil, nil); len(got) != 0 {
+		t.Fatalf("expected empty, got %v", got)
+	}
+	if got := mergeResourceTypes([]string{"v1/Pod"}, nil); len(got) != 1 || got[0] != "v1/Pod" {
+		t.Fatalf("unexpected: %v", got)
+	}
+	if got := mergeResourceTypes(nil, []string{"v1/Pod"}); len(got) != 1 || got[0] != "v1/Pod" {
+		t.Fatalf("unexpected: %v", got)
+	}
+}
+
+func TestMergeResourceTypes_NoDuplicatesInA(t *testing.T) {
+	// When a already contains all of b's entries, result == a
+	a := []string{"v1/ConfigMap", "v1/Pod"}
+	got := mergeResourceTypes(a, []string{"v1/Pod"})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries, got %v", got)
+	}
+}

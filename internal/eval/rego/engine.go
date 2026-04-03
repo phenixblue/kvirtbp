@@ -12,6 +12,7 @@ import (
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/phenixblue/kvirtbp/internal/checks"
 	"github.com/phenixblue/kvirtbp/internal/eval"
+	"github.com/phenixblue/kvirtbp/internal/kube"
 	"github.com/phenixblue/kvirtbp/internal/version"
 	"golang.org/x/mod/semver"
 )
@@ -19,9 +20,10 @@ import (
 type Engine struct{}
 
 type bundleMetadata struct {
-	SchemaVersion    string `json:"schemaVersion"`
-	PolicyVersion    string `json:"policyVersion"`
-	MinBinaryVersion string `json:"minBinaryVersion"`
+	SchemaVersion    string   `json:"schemaVersion"`
+	PolicyVersion    string   `json:"policyVersion"`
+	MinBinaryVersion string   `json:"minBinaryVersion"`
+	Resources        []string `json:"resources"`
 }
 
 const policySchemaVersion = "v1alpha1"
@@ -35,12 +37,12 @@ func (e *Engine) Name() string {
 }
 
 func (e *Engine) Evaluate(ctx context.Context, req eval.RunRequest) (checks.RunResult, error) {
-	regoArgs, err := buildPolicyArgs(req)
+	regoArgs, _, err := buildPolicyArgs(req)
 	if err != nil {
 		return checks.RunResult{}, err
 	}
 
-	input := makeInput(req.Registry)
+	input := makeInput(req.Registry, req.ClusterSnapshot)
 	regoArgs = append(regoArgs,
 		rego.Query("data.kvirtbp.findings"),
 		rego.Input(input),
@@ -73,16 +75,16 @@ func (e *Engine) Evaluate(ctx context.Context, req eval.RunRequest) (checks.RunR
 	return result, nil
 }
 
-func buildPolicyArgs(req eval.RunRequest) ([]func(*rego.Rego), error) {
+func buildPolicyArgs(req eval.RunRequest) ([]func(*rego.Rego), []string, error) {
 	if req.PolicyBundle != "" {
 		return loadBundle(req.PolicyBundle)
 	}
 
 	policyText, err := loadPolicy(req.PolicyFile)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return []func(*rego.Rego){rego.Module("kvirtbp.rego", policyText)}, nil
+	return []func(*rego.Rego){rego.Module("kvirtbp.rego", policyText)}, nil, nil
 }
 
 func loadPolicy(path string) (string, error) {
@@ -96,33 +98,33 @@ func loadPolicy(path string) (string, error) {
 	return string(b), nil
 }
 
-func loadBundle(bundlePath string) ([]func(*rego.Rego), error) {
+func loadBundle(bundlePath string) ([]func(*rego.Rego), []string, error) {
 	md, err := readBundleMetadata(bundlePath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := validateMetadata(md); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	regoFiles, err := filepath.Glob(filepath.Join(bundlePath, "*.rego"))
 	if err != nil {
-		return nil, fmt.Errorf("read bundle rego files: %w", err)
+		return nil, nil, fmt.Errorf("read bundle rego files: %w", err)
 	}
 	if len(regoFiles) == 0 {
-		return nil, fmt.Errorf("policy bundle %q has no .rego files", bundlePath)
+		return nil, nil, fmt.Errorf("policy bundle %q has no .rego files", bundlePath)
 	}
 
 	args := make([]func(*rego.Rego), 0, len(regoFiles))
 	for _, file := range regoFiles {
 		b, err := os.ReadFile(file)
 		if err != nil {
-			return nil, fmt.Errorf("read policy file %q: %w", file, err)
+			return nil, nil, fmt.Errorf("read policy file %q: %w", file, err)
 		}
 		args = append(args, rego.Module(filepath.Base(file), string(b)))
 	}
 
-	return args, nil
+	return args, md.Resources, nil
 }
 
 func readBundleMetadata(bundlePath string) (bundleMetadata, error) {
@@ -176,7 +178,18 @@ func normalizeVersion(v string) string {
 	return v
 }
 
-func makeInput(registry []checks.Check) map[string]any {
+// ResourceTypesFromBundle reads the metadata.json of a policy bundle and
+// returns the list of Kubernetes resource types it declares it needs.
+// Returns nil (no error) when the bundle has no metadata or no resources field.
+func ResourceTypesFromBundle(bundlePath string) ([]string, error) {
+	md, err := readBundleMetadata(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+	return md.Resources, nil
+}
+
+func makeInput(registry []checks.Check, snapshot *kube.ClusterSnapshot) map[string]any {
 	out := make([]map[string]string, 0, len(registry))
 	for _, c := range registry {
 		m := c.Metadata()
@@ -187,7 +200,25 @@ func makeInput(registry []checks.Check) map[string]any {
 			"severity": string(m.Severity),
 		})
 	}
-	return map[string]any{"checks": out}
+	input := map[string]any{"checks": out}
+	if snapshot != nil {
+		input["cluster"] = clusterSnapshotToMap(snapshot)
+	}
+	return input
+}
+
+func clusterSnapshotToMap(snap *kube.ClusterSnapshot) map[string]any {
+	// Serialise via JSON round-trip to produce the map[string]any that OPA
+	// expects, ensuring field names match the JSON tags on ClusterSnapshot.
+	b, err := json.Marshal(snap)
+	if err != nil {
+		return map[string]any{"marshalError": err.Error()}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return map[string]any{"marshalError": err.Error()}
+	}
+	return m
 }
 
 func decodeFindings(value any) ([]checks.Finding, error) {

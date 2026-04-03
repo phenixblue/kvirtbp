@@ -9,7 +9,8 @@
         "goreleaser": true,
         "git rev-parse": true,
         "git tag": true,
-        "git ls-tree": true
+        "git ls-tree": true,
+        "opa": true
     },
     "makefile.configureOnOpen": false
 }

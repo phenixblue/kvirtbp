@@ -1,76 +1,5 @@
 package kvirtbp
 
-allowed_categories := {
-	"production-readiness",
-	"security",
-	"availability",
-}
-
-pass_findings := [finding |
-	check := input.checks[_]
-	allowed_categories[check.category]
-	valid_id_for_category(check)
-	finding := {
-		"checkId": check.id,
-		"title": check.title,
-		"category": check.category,
-		"severity": check.severity,
-		"pass": true,
-		"message": sprintf("rego baseline validated check metadata for %s", [check.id]),
-	}
-]
-
-fail_findings := [finding |
-	check := input.checks[_]
-	not allowed_categories[check.category]
-	finding := {
-		"checkId": check.id,
-		"title": check.title,
-		"category": check.category,
-		"severity": "warning",
-		"pass": false,
-		"reasonCode": "rego.category.unsupported",
-		"message": sprintf("rego baseline rejected unsupported category %s for %s", [check.category, check.id]),
-		"remediation": "Use one of: production-readiness, security, availability.",
-	}
-]
-
-id_mismatch_findings := [finding |
-	check := input.checks[_]
-	allowed_categories[check.category]
-	not valid_id_for_category(check)
-	finding := {
-		"checkId": check.id,
-		"title": check.title,
-		"category": check.category,
-		"severity": "warning",
-		"pass": false,
-		"reasonCode": "rego.id.category.mismatch",
-		"message": sprintf("rego baseline rejected check ID %s for category %s", [check.id, check.category]),
-		"remediation": "Use ID prefixes prod-, sec-, or avail- that match category taxonomy.",
-	}
-]
-
-valid_id_for_category(check) {
-	check.category == "production-readiness"
-	startswith(check.id, "prod-")
-}
-
-valid_id_for_category(check) {
-	check.category == "security"
-	startswith(check.id, "sec-")
-}
-
-valid_id_for_category(check) {
-	check.category == "availability"
-	startswith(check.id, "avail-")
-}
-
-catalog_findings := array.concat(array.concat(pass_findings, fail_findings), id_mismatch_findings)
-
-# ---------------------------------------------------------------------------
-# CLUSTER CHECKS (from input.cluster)
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Helpers — namespace filtering
 # Mirrors targetNamespaces() in internal/kube/preflight.go
@@ -860,17 +789,7 @@ all_permission_findings := array.concat(
 # Required entrypoint: data.kvirtbp.findings
 # ---------------------------------------------------------------------------
 
-# cluster_findings is the exported entrypoint for this module.
-# When no snapshot is present (unit tests, dry-run), return empty.
-cluster_findings := [] { not input.cluster }
-
-# When a snapshot is present, assemble all cluster checks.
-cluster_findings := v {
-	input.cluster
-	v := _assembled_cluster_findings
-}
-
-_assembled_cluster_findings := array.concat(
+findings := array.concat(
 	array.concat(
 		array.concat(
 			array.concat(degraded_findings, discovery_error_findings),
@@ -886,9 +805,3 @@ _assembled_cluster_findings := array.concat(
 		array.concat(pdb_findings, all_permission_findings),
 	),
 )
-
-# ---------------------------------------------------------------------------
-# ENTRYPOINT
-# ---------------------------------------------------------------------------
-
-findings := array.concat(catalog_findings, cluster_findings)

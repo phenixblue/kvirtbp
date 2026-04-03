@@ -157,3 +157,57 @@ findings := [{
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestResourceTypesFromBundle_WithResources(t *testing.T) {
+	tmp := t.TempDir()
+	meta := `{"schemaVersion":"v1alpha1","resources":["apps/v1/Deployment","v1/ConfigMap"]}`
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(meta), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	got, err := ResourceTypesFromBundle(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0] != "apps/v1/Deployment" || got[1] != "v1/ConfigMap" {
+		t.Errorf("unexpected resources: %v", got)
+	}
+}
+
+func TestResourceTypesFromBundle_NoResourcesField(t *testing.T) {
+	tmp := t.TempDir()
+	meta := `{"schemaVersion":"v1alpha1"}`
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(meta), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	got, err := ResourceTypesFromBundle(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected nil/empty resources, got %v", got)
+	}
+}
+
+func TestResourceTypesFromBundle_MissingMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	// no metadata.json written
+	got, err := ResourceTypesFromBundle(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty resources for missing metadata, got %v", got)
+	}
+}
+
+func TestResourceTypesFromBundle_NonExistentBundle(t *testing.T) {
+	// A non-existent path means metadata.json also doesn't exist, which the
+	// implementation treats the same as a missing file — no error, no resources.
+	got, err := ResourceTypesFromBundle("/does/not/exist")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty resources, got %v", got)
+	}
+}

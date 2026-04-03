@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,6 +20,7 @@ type Clients struct {
 	Config    *rest.Config
 	Discovery discovery.DiscoveryInterface
 	Core      kubernetes.Interface
+	Dynamic   dynamic.Interface
 }
 
 func NewClients(opts Options) (*Clients, error) {
@@ -32,10 +34,16 @@ func NewClients(opts Options) (*Clients, error) {
 		return nil, fmt.Errorf("create kubernetes client: %w", err)
 	}
 
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create dynamic client: %w", err)
+	}
+
 	return &Clients{
 		Config:    cfg,
 		Discovery: core.Discovery(),
 		Core:      core,
+		Dynamic:   dyn,
 	}, nil
 }
 

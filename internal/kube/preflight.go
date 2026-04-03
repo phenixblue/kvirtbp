@@ -26,6 +26,12 @@ type permissionProbe struct {
 type PreflightOptions struct {
 	IncludeNamespaces []string
 	ExcludeNamespaces []string
+	// ResourceTypes is a list of additional Kubernetes resource types to fetch
+	// and include in the ClusterSnapshot under input.cluster.resources.
+	// Format: "GROUP/VERSION/RESOURCE" for grouped APIs or "v1/RESOURCE" for
+	// core resources. Examples: "apps/v1/deployments", "v1/configmaps",
+	// "kubevirt.io/v1/VirtualMachine".
+	ResourceTypes []string
 }
 
 func BuildPreflightFindings(ctx context.Context, clients *Clients) []checks.Finding {
@@ -33,33 +39,44 @@ func BuildPreflightFindings(ctx context.Context, clients *Clients) []checks.Find
 }
 
 func BuildPreflightFindingsWithOptions(ctx context.Context, clients *Clients, opts PreflightOptions) []checks.Finding {
+	if clients == nil {
+		return BuildPreflightFindingsFromSnapshot(DegradedSnapshot(opts))
+	}
+	snap := BuildClusterSnapshot(ctx, clients, opts)
+	return BuildPreflightFindingsFromSnapshot(snap)
+}
+
+// BuildPreflightFindingsFromSnapshot derives preflight findings from a
+// ClusterSnapshot. This enables the Go engine to produce findings without a
+// live Kubernetes client and allows the same logic to be exercised in tests.
+func BuildPreflightFindingsFromSnapshot(snap ClusterSnapshot) []checks.Finding {
 	findings := make([]checks.Finding, 0)
 
-	if clients == nil {
+	if snap.Degraded {
 		return append(findings, checks.Finding{
 			CheckID:  "cluster-connectivity",
 			Title:    "Cluster Connectivity",
 			Category: "production-readiness",
 			Severity: checks.SeverityWarning,
 			Pass:     false,
-			Message:  "Kubernetes client is unavailable; scan is running in degraded mode.",
+			Message:  snap.DiscoveryError,
 		})
 	}
 
-	cap, err := DiscoverCapabilities(ctx, clients.Discovery)
-	if err != nil {
+	if snap.DiscoveryError != "" {
 		findings = append(findings, checks.Finding{
 			CheckID:  "cluster-discovery",
 			Title:    "Cluster API Discovery",
 			Category: "production-readiness",
 			Severity: checks.SeverityWarning,
 			Pass:     false,
-			Message:  fmt.Sprintf("API discovery failed: %v", err),
+			Message:  fmt.Sprintf("API discovery failed: %s", snap.DiscoveryError),
 		})
 		return findings
 	}
 
-	if cap.KubeVirtInstalled {
+	// KubeVirt API availability
+	if snap.KubeVirtInstalled {
 		findings = append(findings, checks.Finding{
 			CheckID:  "kubevirt-api-availability",
 			Title:    "KubeVirt API Availability",
@@ -79,17 +96,14 @@ func BuildPreflightFindingsWithOptions(ctx context.Context, clients *Clients, op
 		})
 	}
 
-	findings = append(findings, buildNetworkingAPIFinding(cap))
+	// Networking API
+	findings = append(findings, buildNetworkingAPIFindingFromSnap(snap))
 
-	deployments, depErr := clients.Core.AppsV1().Deployments("kubevirt").List(ctx, metav1.ListOptions{})
-	if depErr != nil {
-		findings = append(findings, buildKubeVirtOperatorHealthFinding(nil, depErr))
-	} else {
-		findings = append(findings, buildKubeVirtOperatorHealthFinding(deployments.Items, nil))
-	}
+	// KubeVirt operator health
+	findings = append(findings, buildKubeVirtOperatorHealthFindingFromSnap(snap))
 
-	nodes, err := clients.Core.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
+	// Node inventory and control-plane HA
+	if snap.NodesError != "" {
 		findings = append(findings, checks.Finding{
 			CheckID:       "prod-node-inventory",
 			Title:         "Production Node Inventory",
@@ -99,38 +113,78 @@ func BuildPreflightFindingsWithOptions(ctx context.Context, clients *Clients, op
 			Confidence:    checks.ConfidenceHigh,
 			Pass:          false,
 			ReasonCode:    "prod.nodes.list.error",
-			Message:       fmt.Sprintf("unable to list nodes: %v", err),
+			Message:       fmt.Sprintf("unable to list nodes: %s", snap.NodesError),
 			RemediationID: "RUNBOOK-PROD-BASELINE-001",
 			Remediation:   "Grant node list permissions and verify API server connectivity.",
 		})
 	} else {
-		findings = append(findings, buildNodeInventoryFinding(nodes.Items...))
-		findings = append(findings, buildControlPlaneHAFinding(nodes.Items...))
+		findings = append(findings, buildNodeInventoryFindingFromSnap(snap))
+		findings = append(findings, buildControlPlaneHAFindingFromSnap(snap))
 	}
 
-	namespaces, err := clients.Core.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
+	opts := PreflightOptions{
+		IncludeNamespaces: snap.NamespaceInclude,
+		ExcludeNamespaces: snap.NamespaceExclude,
+	}
+
+	// Namespace-scoped checks
+	if snap.NamespacesError != "" {
+		nsErr := fmt.Errorf("unable to list namespaces: %s", snap.NamespacesError)
 		findings = append(findings,
-			buildNamespacePSAEnforceFinding(nil, fmt.Errorf("unable to list namespaces: %w", err), opts),
-			buildNetworkPolicyCoverageFinding(nil, nil, fmt.Errorf("unable to list namespaces: %w", err), opts),
-			buildNamespaceGuardrailsCoverageFinding(nil, nil, nil, fmt.Errorf("unable to list namespaces: %w", err), opts),
-			buildNamespacePDBCoverageFinding(nil, nil, fmt.Errorf("unable to list namespaces: %w", err), opts),
+			buildNamespacePSAEnforceFinding(nil, nsErr, opts),
+			buildNetworkPolicyCoverageFinding(nil, nil, nsErr, opts),
+			buildNamespaceGuardrailsCoverageFinding(nil, nil, nil, nsErr, opts),
+			buildNamespacePDBCoverageFinding(nil, nil, nsErr, opts),
 		)
 	} else {
-		findings = append(findings, buildNamespacePSAEnforceFinding(namespaces.Items, nil, opts))
+		nsList := snapToNamespaces(snap)
+		npErr := snapError(snap.NetworkPoliciesError)
+		findings = append(findings, buildNetworkPolicyCoverageFinding(nsList, snapToNetworkPolicies(snap), npErr, opts))
 
-		networkPolicies, npErr := clients.Core.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
-		findings = append(findings, buildNetworkPolicyCoverageFinding(namespaces.Items, networkPolicies.Items, npErr, opts))
+		findings = append(findings, buildNamespacePSAEnforceFinding(nsList, nil, opts))
 
-		resourceQuotas, rqErr := clients.Core.CoreV1().ResourceQuotas("").List(ctx, metav1.ListOptions{})
-		limitRanges, lrErr := clients.Core.CoreV1().LimitRanges("").List(ctx, metav1.ListOptions{})
-		findings = append(findings, buildNamespaceGuardrailsCoverageFinding(namespaces.Items, resourceQuotas.Items, limitRanges.Items, joinErrs(rqErr, lrErr), opts))
+		rqErr := snapError(snap.ResourceQuotasError)
+		lrErr := snapError(snap.LimitRangesError)
+		findings = append(findings, buildNamespaceGuardrailsCoverageFinding(nsList, snapToResourceQuotas(snap), snapToLimitRanges(snap), joinErrs(rqErr, lrErr), opts))
 
-		pdbs, pdbErr := clients.Core.PolicyV1().PodDisruptionBudgets("").List(ctx, metav1.ListOptions{})
-		findings = append(findings, buildNamespacePDBCoverageFinding(namespaces.Items, pdbs.Items, pdbErr, opts))
+		pdbErr := snapError(snap.PodDisruptionBudgetsError)
+		findings = append(findings, buildNamespacePDBCoverageFinding(nsList, snapToPDBs(snap), pdbErr, opts))
 	}
 
-	findings = append(findings, permissionFindings(ctx, clients)...)
+	// Permission findings from snapshot
+	for _, p := range snap.Permissions {
+		if p.Error != "" {
+			findings = append(findings, checks.Finding{
+				CheckID:  p.ID,
+				Title:    "RBAC Preflight",
+				Category: "security",
+				Severity: checks.SeverityWarning,
+				Pass:     false,
+				Message:  fmt.Sprintf("permission probe failed for %s.%s: %s", p.Resource, p.Group, p.Error),
+			})
+			continue
+		}
+		if p.Allowed {
+			findings = append(findings, checks.Finding{
+				CheckID:  p.ID,
+				Title:    "RBAC Preflight",
+				Category: "security",
+				Severity: checks.SeverityInfo,
+				Pass:     true,
+				Message:  fmt.Sprintf("allowed to %s %s.%s", p.Verb, p.Resource, p.Group),
+			})
+			continue
+		}
+		findings = append(findings, checks.Finding{
+			CheckID:  p.ID,
+			Title:    "RBAC Preflight",
+			Category: "security",
+			Severity: checks.SeverityWarning,
+			Pass:     false,
+			Message:  fmt.Sprintf("not allowed to %s %s.%s (%s)", p.Verb, p.Resource, p.Group, p.Reason),
+		})
+	}
+
 	return findings
 }
 
@@ -803,53 +857,6 @@ func controlPlaneNodeCount(nodes ...corev1.Node) int {
 	return count
 }
 
-func permissionFindings(ctx context.Context, clients *Clients) []checks.Finding {
-	probes := []permissionProbe{
-		{ID: "perm-list-nodes", Group: "", Resource: "nodes", Verb: "list"},
-		{ID: "perm-list-namespaces", Group: "", Resource: "namespaces", Verb: "list"},
-		{ID: "perm-list-vms", Group: "kubevirt.io", Resource: "virtualmachines", Verb: "list"},
-	}
-
-	findings := make([]checks.Finding, 0, len(probes))
-	for _, p := range probes {
-		allowed, reason, err := canI(ctx, clients, p)
-		if err != nil {
-			findings = append(findings, checks.Finding{
-				CheckID:  p.ID,
-				Title:    "RBAC Preflight",
-				Category: "security",
-				Severity: checks.SeverityWarning,
-				Pass:     false,
-				Message:  fmt.Sprintf("permission probe failed for %s.%s: %v", p.Resource, p.Group, err),
-			})
-			continue
-		}
-
-		if allowed {
-			findings = append(findings, checks.Finding{
-				CheckID:  p.ID,
-				Title:    "RBAC Preflight",
-				Category: "security",
-				Severity: checks.SeverityInfo,
-				Pass:     true,
-				Message:  fmt.Sprintf("allowed to %s %s.%s", p.Verb, p.Resource, p.Group),
-			})
-			continue
-		}
-
-		findings = append(findings, checks.Finding{
-			CheckID:  p.ID,
-			Title:    "RBAC Preflight",
-			Category: "security",
-			Severity: checks.SeverityWarning,
-			Pass:     false,
-			Message:  fmt.Sprintf("not allowed to %s %s.%s (%s)", p.Verb, p.Resource, p.Group, reason),
-		})
-	}
-
-	return findings
-}
-
 func canI(ctx context.Context, clients *Clients, p permissionProbe) (bool, string, error) {
 	review, err := clients.Core.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
 		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
@@ -865,4 +872,123 @@ func canI(ctx context.Context, clients *Clients, p permissionProbe) (bool, strin
 	}
 
 	return review.Status.Allowed, review.Status.Reason, nil
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot-based variants of finding builders
+// ---------------------------------------------------------------------------
+
+func buildNetworkingAPIFindingFromSnap(snap ClusterSnapshot) checks.Finding {
+	return buildNetworkingAPIFinding(Capabilities{HasNetworkingV1: snap.HasNetworkingV1})
+}
+
+func buildKubeVirtOperatorHealthFindingFromSnap(snap ClusterSnapshot) checks.Finding {
+	if snap.DeploymentsError != "" {
+		return buildKubeVirtOperatorHealthFinding(nil, errors.New(snap.DeploymentsError))
+	}
+	deps := make([]appsv1.Deployment, 0, len(snap.KubeVirtDeployments))
+	for _, d := range snap.KubeVirtDeployments {
+		dep := appsv1.Deployment{}
+		dep.Name = d.Name
+		dep.Namespace = d.Namespace
+		dep.Status.AvailableReplicas = d.AvailableReplicas
+		deps = append(deps, dep)
+	}
+	return buildKubeVirtOperatorHealthFinding(deps, nil)
+}
+
+func buildNodeInventoryFindingFromSnap(snap ClusterSnapshot) checks.Finding {
+	nodes := snapToNodes(snap)
+	return buildNodeInventoryFinding(nodes...)
+}
+
+func buildControlPlaneHAFindingFromSnap(snap ClusterSnapshot) checks.Finding {
+	nodes := snapToNodes(snap)
+	return buildControlPlaneHAFinding(nodes...)
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot → typed-object conversion helpers
+// ---------------------------------------------------------------------------
+
+func snapToNodes(snap ClusterSnapshot) []corev1.Node {
+	out := make([]corev1.Node, 0, len(snap.Nodes))
+	for _, n := range snap.Nodes {
+		node := corev1.Node{}
+		node.Name = n.Name
+		node.Labels = map[string]string{}
+		if n.ControlPlane {
+			node.Labels["node-role.kubernetes.io/control-plane"] = ""
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
+func snapToNamespaces(snap ClusterSnapshot) []corev1.Namespace {
+	out := make([]corev1.Namespace, 0, len(snap.Namespaces))
+	for _, ns := range snap.Namespaces {
+		obj := corev1.Namespace{}
+		obj.Name = ns.Name
+		obj.Status.Phase = corev1.NamespacePhase(ns.Phase)
+		if ns.Labels != nil {
+			obj.Labels = make(map[string]string, len(ns.Labels))
+			for k, v := range ns.Labels {
+				obj.Labels[k] = v
+			}
+		}
+		out = append(out, obj)
+	}
+	return out
+}
+
+func snapToNetworkPolicies(snap ClusterSnapshot) []networkingv1.NetworkPolicy {
+	out := make([]networkingv1.NetworkPolicy, 0, len(snap.NetworkPolicies))
+	for _, np := range snap.NetworkPolicies {
+		obj := networkingv1.NetworkPolicy{}
+		obj.Name = np.Name
+		obj.Namespace = np.Namespace
+		out = append(out, obj)
+	}
+	return out
+}
+
+func snapToResourceQuotas(snap ClusterSnapshot) []corev1.ResourceQuota {
+	out := make([]corev1.ResourceQuota, 0, len(snap.ResourceQuotas))
+	for _, rq := range snap.ResourceQuotas {
+		obj := corev1.ResourceQuota{}
+		obj.Name = rq.Name
+		obj.Namespace = rq.Namespace
+		out = append(out, obj)
+	}
+	return out
+}
+
+func snapToLimitRanges(snap ClusterSnapshot) []corev1.LimitRange {
+	out := make([]corev1.LimitRange, 0, len(snap.LimitRanges))
+	for _, lr := range snap.LimitRanges {
+		obj := corev1.LimitRange{}
+		obj.Name = lr.Name
+		obj.Namespace = lr.Namespace
+		out = append(out, obj)
+	}
+	return out
+}
+
+func snapToPDBs(snap ClusterSnapshot) []policyv1.PodDisruptionBudget {
+	out := make([]policyv1.PodDisruptionBudget, 0, len(snap.PodDisruptionBudgets))
+	for _, pdb := range snap.PodDisruptionBudgets {
+		obj := policyv1.PodDisruptionBudget{}
+		obj.Name = pdb.Name
+		obj.Namespace = pdb.Namespace
+		out = append(out, obj)
+	}
+	return out
+}
+
+func snapError(s string) error {
+	if s == "" {
+		return nil
+	}
+	return errors.New(s)
 }

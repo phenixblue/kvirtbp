@@ -38,6 +38,26 @@ e2e-kind-fail:
 lint:
 	golangci-lint run
 
+.PHONY: rego-fmt
+rego-fmt:
+	opa fmt --v0-compatible --write ./policy/ ./internal/eval/rego/policy/ ./test/fixtures/
+
+.PHONY: rego-check
+rego-check:
+	opa check --v0-compatible ./policy/ ./internal/eval/rego/policy/ ./test/fixtures/
+
+.PHONY: rego-test
+rego-test:
+	opa test --v0-compatible ./policy/ -v
+
+.PHONY: e2e-kind-custom-bundle-pass
+e2e-kind-custom-bundle-pass:
+	bash ./scripts/e2e_kind_custom_bundle.sh pass
+
+.PHONY: e2e-kind-custom-bundle-fail
+e2e-kind-custom-bundle-fail:
+	bash ./scripts/e2e_kind_custom_bundle.sh fail
+
 .PHONY: bench
 bench:
 	go test ./internal/checks ./internal/report -bench=. -benchmem -run='^$$'

@@ -249,5 +249,3 @@ func defaultPermissionProbes() []permissionProbe {
 		{ID: "perm-list-vms", Group: "kubevirt.io", Resource: "virtualmachines", Verb: "list"},
 	}
 }
-
-

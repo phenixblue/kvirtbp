@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 )
+
 // Resolve returns the local directory path for the bundle at rawPath.
 //
 // If rawPath is a local filesystem path it is returned as-is and cleanup is a
@@ -146,7 +147,7 @@ func fetchAndUnpack(ctx context.Context, rawURL, destDir string) error {
 				return fmt.Errorf("write file %q: %w", target, err)
 			}
 			f.Close()
-		// Intentionally skip symlinks, hard-links, and special files.
+			// Intentionally skip symlinks, hard-links, and special files.
 		}
 	}
 

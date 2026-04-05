@@ -20,7 +20,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-
 func newCollectCmd(kubeconfigPath *string, kubeContext *string) *cobra.Command {
 	var policyBundles []string
 	var collectorConfigFiles []string

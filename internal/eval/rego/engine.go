@@ -21,10 +21,10 @@ import (
 type Engine struct{}
 
 type bundleMetadata struct {
-	SchemaVersion    string                    `json:"schemaVersion"`
-	PolicyVersion    string                    `json:"policyVersion"`
-	MinBinaryVersion string                    `json:"minBinaryVersion"`
-	Resources        []string                  `json:"resources"`
+	SchemaVersion    string                      `json:"schemaVersion"`
+	PolicyVersion    string                      `json:"policyVersion"`
+	MinBinaryVersion string                      `json:"minBinaryVersion"`
+	Resources        []string                    `json:"resources"`
 	Collectors       []collector.CollectorConfig `json:"collectors,omitempty"`
 }
 

@@ -163,7 +163,7 @@ func (c *jobCollector) buildJob(jobName, nodeName, namespace string) *batchv1.Jo
 	shellCmd := strings.Join(commands, " && ")
 
 	var ttlSeconds int32 = 300 // clean up completed jobs after 5 min even if SkipCleanup=false
-	var backoffLimit int32 = 0  // never retry; surface failures immediately
+	var backoffLimit int32 = 0 // never retry; surface failures immediately
 
 	env := make([]corev1.EnvVar, 0, len(c.cfg.Env))
 	for k, v := range c.cfg.Env {
@@ -194,7 +194,7 @@ func (c *jobCollector) buildJob(jobName, nodeName, namespace string) *batchv1.Jo
 	}
 
 	labels := map[string]string{
-		jobLabelKey:     jobLabelVal,
+		jobLabelKey:      jobLabelVal,
 		"collector-name": c.cfg.Name,
 	}
 

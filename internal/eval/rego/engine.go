@@ -11,6 +11,7 @@ import (
 
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/phenixblue/kvirtbp/internal/checks"
+	"github.com/phenixblue/kvirtbp/internal/collector"
 	"github.com/phenixblue/kvirtbp/internal/eval"
 	"github.com/phenixblue/kvirtbp/internal/kube"
 	"github.com/phenixblue/kvirtbp/internal/version"
@@ -20,10 +21,11 @@ import (
 type Engine struct{}
 
 type bundleMetadata struct {
-	SchemaVersion    string   `json:"schemaVersion"`
-	PolicyVersion    string   `json:"policyVersion"`
-	MinBinaryVersion string   `json:"minBinaryVersion"`
-	Resources        []string `json:"resources"`
+	SchemaVersion    string                      `json:"schemaVersion"`
+	PolicyVersion    string                      `json:"policyVersion"`
+	MinBinaryVersion string                      `json:"minBinaryVersion"`
+	Resources        []string                    `json:"resources"`
+	Collectors       []collector.CollectorConfig `json:"collectors,omitempty"`
 }
 
 const policySchemaVersion = "v1alpha1"
@@ -187,6 +189,17 @@ func ResourceTypesFromBundle(bundlePath string) ([]string, error) {
 		return nil, err
 	}
 	return md.Resources, nil
+}
+
+// CollectorsFromBundle reads the metadata.json of a policy bundle and returns
+// the collector configurations declared by the bundle. Returns nil (no error)
+// when the bundle has no metadata or no collectors declared.
+func CollectorsFromBundle(bundlePath string) ([]collector.CollectorConfig, error) {
+	md, err := readBundleMetadata(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+	return md.Collectors, nil
 }
 
 func makeInput(registry []checks.Check, snapshot *kube.ClusterSnapshot) map[string]any {

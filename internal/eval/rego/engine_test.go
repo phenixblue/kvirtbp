@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/phenixblue/kvirtbp/internal/checks"
+	"github.com/phenixblue/kvirtbp/internal/collector"
 	"github.com/phenixblue/kvirtbp/internal/eval"
+	"github.com/phenixblue/kvirtbp/internal/kube"
 )
 
 type stubCheck struct {
@@ -209,5 +211,167 @@ func TestResourceTypesFromBundle_NonExistentBundle(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty resources, got %v", got)
+	}
+}
+
+// ---- CollectorsFromBundle ----
+
+func TestCollectorsFromBundle_WithCollectors(t *testing.T) {
+	tmp := t.TempDir()
+	meta := `{
+		"schemaVersion": "v1alpha1",
+		"collectors": [
+			{"name": "sysctl", "image": "alpine", "scope": "per-node", "commands": ["sysctl -a > /kvirtbp/output.json"]}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(meta), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	got, err := CollectorsFromBundle(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 collector, got %d", len(got))
+	}
+	if got[0].Name != "sysctl" || got[0].Image != "alpine" || got[0].Scope != collector.ScopePerNode {
+		t.Errorf("unexpected collector: %+v", got[0])
+	}
+}
+
+func TestCollectorsFromBundle_NoCollectorsField(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(`{"schemaVersion":"v1alpha1"}`), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	got, err := CollectorsFromBundle(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected nil/empty collectors, got %v", got)
+	}
+}
+
+func TestCollectorsFromBundle_MissingMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	got, err := CollectorsFromBundle(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty collectors for missing metadata, got %v", got)
+	}
+}
+
+// ---- Rego evaluation with collector data ----
+
+func TestEvaluateWithCollectorData(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Policy that inspects input.cluster.collectors and emits a passing finding
+	// when a specific sysctl value is present.
+	policy := `package kvirtbp
+
+import rego.v1
+
+ip_forward := object.get(
+    object.get(
+        object.get(
+            object.get(input.cluster, "collectors", {}),
+        "sysctl", {}),
+    "_cluster", {}),
+"net.ipv4.ip_forward", "0")
+
+findings := [{
+  "checkId": "collector-check",
+  "title": "IP Forwarding Check",
+  "category": "security",
+  "severity": "info",
+  "pass": ip_forward == "1",
+  "message": "net.ipv4.ip_forward should be 1"
+}]`
+	if err := os.WriteFile(filepath.Join(tmp, "policy.rego"), []byte(policy), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(`{"schemaVersion":"v1alpha1"}`), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	snap := &kube.ClusterSnapshot{
+		Collectors: map[string]any{
+			"sysctl": map[string]any{
+				"_cluster": map[string]any{
+					"net.ipv4.ip_forward": "1",
+				},
+			},
+		},
+	}
+
+	engine := New()
+	result, err := engine.Evaluate(context.Background(), eval.RunRequest{
+		PolicyBundle:    tmp,
+		ClusterSnapshot: snap,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() returned error: %v", err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result.Findings))
+	}
+	if !result.Findings[0].Pass {
+		t.Errorf("expected finding to pass when collector value is '1'")
+	}
+}
+
+func TestEvaluateWithCollectorData_MissingData(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Policy that gracefully handles absent collector data by defaulting to "0".
+	// When no collector data is injected the pass condition must be false.
+	policy := `package kvirtbp
+
+import rego.v1
+
+# Start from input.cluster (always present) to safely handle absent collectors.
+ip_forward := object.get(
+    object.get(
+        object.get(
+            object.get(input.cluster, "collectors", {}),
+        "sysctl", {}),
+    "_cluster", {}),
+"net.ipv4.ip_forward", "0")
+
+findings := [{
+  "checkId": "collector-check",
+  "title": "IP Forwarding Check",
+  "category": "security",
+  "severity": "info",
+  "pass": ip_forward == "1",
+  "message": "net.ipv4.ip_forward should be 1"
+}]`
+	if err := os.WriteFile(filepath.Join(tmp, "policy.rego"), []byte(policy), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(`{"schemaVersion":"v1alpha1"}`), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	// No collector data injected — ClusterSnapshot.Collectors is nil.
+	snap := &kube.ClusterSnapshot{}
+
+	engine := New()
+	result, err := engine.Evaluate(context.Background(), eval.RunRequest{
+		PolicyBundle:    tmp,
+		ClusterSnapshot: snap,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() returned error: %v", err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result.Findings))
+	}
+	if result.Findings[0].Pass {
+		t.Errorf("expected finding to fail when collector data is absent")
 	}
 }

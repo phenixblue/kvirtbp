@@ -2,3 +2,5 @@ bin/
 .DS_Store
 dist/
 planning/
+collector-data.json
+collectors-test/

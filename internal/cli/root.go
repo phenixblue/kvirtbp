@@ -34,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&kubeContext, "context", "", "Kubernetes context override")
 
 	root.AddCommand(newScanCmd(&outputFlag, &kubeconfigPath, &kubeContext))
+	root.AddCommand(newCollectCmd(&kubeconfigPath, &kubeContext))
 	root.AddCommand(newChecksCmd())
 	root.AddCommand(newRunbookCmd())
 	root.AddCommand(&cobra.Command{

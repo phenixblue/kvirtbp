@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "v1alpha1",
+  "policyVersion": "0.1.0",
+  "collectors": [
+    {
+      "name": "hugepages",
+      "image": "alpine:3.21",
+      "commands": [
+        "awk '/HugePages_Total/{t=$2} /HugePages_Free/{f=$2} /Hugepagesize/{s=$2} END{printf \"{\\\"total\\\":%d,\\\"free\\\":%d,\\\"size_kb\\\":%d}\\n\",t,f,s}' /proc/meminfo > /kvirtbp/output.json"
+      ],
+      "scope": "per-node",
+      "tolerations": [{"operator": "Exists"}]
+    }
+  ]
+}

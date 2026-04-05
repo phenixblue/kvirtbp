@@ -16,6 +16,38 @@ The scanner expects read/list access to:
 
 Insufficient access is reported as explicit permission findings (`perm-list-*`) and may degrade security/availability baseline outcomes.
 
+The `collect` subcommand creates Kubernetes Jobs and therefore requires additional permissions in the collector namespace:
+
+- `batch/jobs` — create, get, list, delete
+- `pods/log` — get (to read Job output)
+- `namespaces` — get, create (only if `--collector-namespace` does not already exist)
+
+## Collector workflow
+
+The `collect` subcommand deploys short-lived Kubernetes Jobs to gather data that Rego policies can reference via `input.cluster.collectors`. This is a separate step from `scan`; the scan command itself makes no cluster writes.
+
+Typical two-step workflow:
+
+```bash
+# Step 1: collect — writes collector-data.json
+./bin/kvirtbp collect --bundle ./policy/baseline --output collector-data.json
+
+# Step 2: scan — injects collected data, makes no cluster writes
+./bin/kvirtbp scan --engine rego --policy-bundle ./policy/baseline \
+    --collector-data collector-data.json
+```
+
+Key `collect` flags:
+
+- `--bundle` — loads collector definitions from a bundle's `metadata.json` automatically
+- `--collector-config` — path to a standalone JSON file of `[]CollectorConfig`; merged with bundle collectors (file wins on name collision)
+- `--collector-namespace` — Kubernetes namespace for Jobs (default: `kvirtbp-collectors`; created if absent)
+- `--collector-timeout` — maximum time to wait for all collectors (default: `5m`)
+- `--no-collector-cleanup` — keep completed Jobs after collection (useful for debugging)
+- `--output` — path for the collector data JSON file (default: `collector-data.json`)
+
+Collector Jobs are deleted automatically after completion unless `--no-collector-cleanup` is set. A `TTLSecondsAfterFinished` of 300 seconds is also set on each Job as a safety net.
+
 ## Runtime behavior
 
 Key runtime flags:
@@ -29,6 +61,7 @@ Key runtime flags:
 - `--policy-bundle`
 - `--waiver-file`
 - `--show-runbook`
+- `--collector-data` (inject pre-collected node/cluster data into `input.cluster.collectors`)
 
 Output modes:
 
@@ -91,5 +124,9 @@ Waiver rules:
   - Apply PSA enforce labels and baseline NetworkPolicies.
 - Namespace guardrail failures:
   - Add ResourceQuota and LimitRange to targeted namespaces.
+- Collector failures:
+  - Check Job status in the collector namespace: `kubectl get jobs -n kvirtbp-collectors`
+  - Use `--no-collector-cleanup` to retain failed Jobs for log inspection.
+  - Ensure the scanning identity has `batch/jobs` create/get/delete and `pods/log` get in the collector namespace.
 
 For remediation-specific playbooks, see `docs/runbooks.md`.

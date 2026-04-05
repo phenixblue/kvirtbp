@@ -32,6 +32,20 @@ make build
 ./bin/kvirtbp scan --show-runbook --output table
 ./bin/kvirtbp runbook
 ./bin/kvirtbp runbook --id RUNBOOK-SEC-RBAC-001
+
+# Collector workflow — gather node/cluster data then scan with it
+./bin/kvirtbp collect --bundle ./policy/baseline --output collector-data.json
+./bin/kvirtbp collect --collector-config ./my-collectors.json --output collector-data.json
+./bin/kvirtbp scan --engine rego --policy-bundle ./policy/baseline --collector-data collector-data.json
+
+# Remote bundle (HTTPS tarball)
+./bin/kvirtbp collect --bundle https://github.com/myorg/policies/archive/refs/tags/v1.2.0.tar.gz --output collector-data.json
+./bin/kvirtbp scan --engine rego --policy-bundle https://github.com/myorg/policies/archive/refs/tags/v1.2.0.tar.gz --collector-data collector-data.json
+
+# Remote monorepo (bundle lives under a subdirectory)
+./bin/kvirtbp scan --engine rego \
+  --policy-bundle https://github.com/myorg/policies/archive/refs/tags/v1.2.0.tar.gz \
+  --bundle-subdir policy/kubevirt --collector-data collector-data.json
 ```
 
 ## Homebrew
@@ -92,8 +106,10 @@ Scan command supports:
 - `--category` and `--severity` to filter findings
 - `--engine` to select evaluator backend (`go` and `rego`)
 - `--policy-file` to provide a custom Rego policy file with `data.kvirtbp.findings` output
-- `--policy-bundle` to provide a directory of `.rego` files with optional `metadata.json`
+- `--policy-bundle` to provide a local directory or HTTPS `.tar.gz` URL of `.rego` files with optional `metadata.json`
+- `--bundle-subdir` to point at a subdirectory within a remote archive (for monorepo layouts)
 - `--show-runbook` to append compact runbook hints for failing findings
+- `--collector-data` to inject pre-collected node/cluster data into `input.cluster.collectors` for Rego policies
 
 Namespace scoping precedence for namespace-based coverage controls:
 
@@ -132,6 +148,7 @@ Additional documentation:
 
 - [docs/check-catalog.md](docs/check-catalog.md)
 - [docs/policy-authoring.md](docs/policy-authoring.md)
+- [docs/collectors.md](docs/collectors.md)
 - [docs/operations.md](docs/operations.md)
 - [docs/workflows.md](docs/workflows.md)
 
@@ -140,6 +157,7 @@ Policy bundle metadata (optional `metadata.json`):
 - `schemaVersion`: currently `v1alpha1`
 - `policyVersion`: informational version for your bundle
 - `minBinaryVersion`: optional minimum CLI version (for example `1.2.0`)
+- `collectors`: optional array of `CollectorConfig` objects that `kvirtbp collect` will run automatically when `--bundle` is provided (see [docs/collectors.md](docs/collectors.md))
 
 Checked-in baseline Rego bundle:
 
@@ -196,4 +214,5 @@ Manual CI execution:
 ## Roadmap notes
 
 - v1 includes hybrid policy execution (Go + Rego/OPA)
+- The `collect` subcommand and collector framework are included in v1
 - Snapshot bundle export and visualization UI are post-v1 roadmap items

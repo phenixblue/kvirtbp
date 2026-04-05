@@ -53,6 +53,13 @@ type ClusterSnapshot struct {
 	// Values are lists of ResourceSnapshot objects. Populated only when
 	// ResourceTypes are declared in bundle metadata or via --resource flag.
 	Resources map[string][]ResourceSnapshot `json:"resources,omitempty"`
+
+	// Collectors holds data injected from external collectors, keyed by
+	// collector name. For per-node collectors the value is
+	// map[nodeName]map[string]any; for once-collectors it is
+	// map["_cluster"]map[string]any. Populated via --collector-data or the
+	// collect subcommand.
+	Collectors map[string]any `json:"collectors,omitempty"`
 }
 
 // ResourceSnapshot is a generic, serializable representation of a single

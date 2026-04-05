@@ -247,6 +247,68 @@ findings := array.concat(
 | Named partial arrays (`required_check_findings`, etc.) | Each rule produces an independent slice; `array.concat` merges them into `findings` |
 | `findings` entrypoint | Must be `data.kvirtbp.findings`; the engine reads exactly this path |
 
+## Accessing collector data in Rego
+
+Collector output is injected into `input.cluster.collectors` when `--collector-data <file>` is passed to `scan`. The structure mirrors the file produced by `kvirtbp collect`:
+
+```
+input.cluster.collectors["<collector-name>"]["<node-name-or-_cluster>"]["<key>"] = "<value>"
+```
+
+- **`_cluster`** is the key used for `scope: once` (single cluster-wide Job)
+- **node names** are keys for `scope: per-node` (one Job per node)
+
+Example policy reading a sysctl value:
+
+```rego
+package kvirtbp
+
+import rego.v1
+
+# Always start from input.cluster (guaranteed defined) — not input.cluster.collectors,
+# which may be absent when --collector-data is not provided.
+ip_forward := object.get(
+    object.get(
+        object.get(
+            object.get(input.cluster, "collectors", {}),
+        "sysctl", {}),
+    "_cluster", {}),
+"net.ipv4.ip_forward", "0")
+
+findings := [{
+    "checkId":  "sec-ip-forward",
+    "title":    "IP Forwarding Disabled",
+    "category": "security",
+    "severity": "warning",
+    "pass":     ip_forward == "0",
+    "message":  sprintf("net.ipv4.ip_forward = %s (expected 0)", [ip_forward]),
+}]
+```
+
+> **Important:** `object.get` returns undefined — not the default — when its first argument is itself undefined. Always anchor the chain at a value that is guaranteed to be present in `input` (such as `input.cluster`) so the rule produces a result even when collector data is absent.
+
+For a per-node pattern:
+
+```rego
+node_results := object.get(object.get(input.cluster, "collectors", {}), "sysctl", {})
+
+findings := [finding |
+    node := input.cluster.nodes[_]
+    node_data := object.get(node_results, node.name, {})
+    val := object.get(node_data, "net.ipv4.ip_forward", "0")
+    val != "0"
+    finding := {
+        "checkId":  "sec-ip-forward",
+        "title":    "IP Forwarding Disabled",
+        "category": "security",
+        "severity": "warning",
+        "pass":     false,
+        "message":  sprintf("node %s has net.ipv4.ip_forward=%s", [node.name, val]),
+        "evidence": {"node": node.name, "value": val},
+    }
+]
+```
+
 ## Bundle layout
 
 A bundle directory can contain one or more `.rego` files and optional metadata.
@@ -261,6 +323,9 @@ Example:
 - `schemaVersion` (currently `v1alpha1`)
 - `policyVersion` (informational)
 - `minBinaryVersion` (optional)
+- `collectors` (optional) — array of `CollectorConfig` objects run automatically by `kvirtbp collect --bundle`; their output is injected into `input.cluster.collectors` at scan time
+
+See [docs/collectors.md](docs/collectors.md) for the full `CollectorConfig` schema and collector authoring guide.
 
 ## Go check authoring
 

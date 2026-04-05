@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "v1alpha1",
+  "policyVersion": "0.1.0",
+  "collectors": [
+    {
+      "name": "node-info",
+      "image": "alpine:3.21",
+      "commands": [
+        "printf '{\"kernel\":\"%s\",\"arch\":\"%s\"}\\n' \"$(uname -r)\" \"$(uname -m)\" > /kvirtbp/output.json"
+      ],
+      "scope": "per-node",
+      "tolerations": [{"operator": "Exists"}]
+    }
+  ]
+}

@@ -328,7 +328,7 @@ kubectl --context "$KUBE_CONTEXT" -n "$PX_NAMESPACE" \
 #   PX_CONTAINER_RUNTIME=containerd   — k3s nodes do not have a Docker daemon
 #   PX_CONTAINERD_SOCK                — k3s bundles its own containerd at a
 #                                       non-standard socket path
-#   kubeletDir                        — k3s kubelet root is at the rancher path,
+#   K8S_KUBELET_ROOT_DIR              — k3s kubelet root is at the rancher path,
 #                                       not the standard /var/lib/kubelet; CSI
 #                                       driver sockets are resolved relative to
 #                                       this directory
@@ -372,12 +372,13 @@ spec:
       exportMetrics: false
   userInterface:
     enabled: false
-  kubeletDir: /var/lib/rancher/k3s/agent/kubelet
   env:
     - name: PX_CONTAINER_RUNTIME
       value: containerd
     - name: PX_CONTAINERD_SOCK
       value: /run/k3s/containerd/containerd.sock
+    - name: K8S_KUBELET_ROOT_DIR
+      value: /var/lib/rancher/k3s/agent/kubelet
 EOF
 
 # ── 7. Wait for Portworx to come online ───────────────────────────────────────

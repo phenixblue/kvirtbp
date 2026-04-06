@@ -305,6 +305,38 @@ chmod +x /usr/local/bin/systemctl
 ln -sf /usr/local/bin/systemctl /usr/bin/systemctl 2>/dev/null || true
 ln -sf /usr/local/bin/systemctl /bin/systemctl 2>/dev/null || true
 
+# ── initctl shim (upstart fallback) ───────────────────────────────────────
+# oci-monitor selects service controllers in order: systemd → upstart → fail.
+# The systemd check requires BOTH a valid systemctl response AND a cgroup v1
+# entry with name=systemd in /proc/1/mounts.  On cgroup v2-only hosts
+# (Ubuntu 21.10+, RHEL 9, many cloud VMs) that cgroup v1 entry cannot be
+# created inside the container, so the systemd check always fails.
+#
+# The upstart check only needs: initctl version → non-empty output.
+# Adding an initctl shim guarantees oci-monitor selects the upstart
+# controller and does not error with No suitable service controller.
+# All subsequent service management calls (start/stop/status) are no-ops
+# because oci-monitor's internal watchdog manages the process lifecycle
+# directly in Kubernetes DaemonSet deployments.
+
+echo 'Installing initctl shim for oci-monitor upstart controller fallback'
+cat > /sbin/initctl << 'INITCTL_SHIM'
+#!/bin/sh
+# k3d initctl shim - upstart fallback for Portworx oci-monitor.
+# initctl version must return a non-empty string so oci-monitor selects
+# upstart as the service controller when the systemd cgroup check fails.
+case \"\${1:-version}\" in
+  version) echo 'initctl (upstart 1.13.2)'; exit 0 ;;
+  start|stop|restart|reload|status|list|emit|re-exec)
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+INITCTL_SHIM
+chmod +x /sbin/initctl
+ln -sf /sbin/initctl /usr/sbin/initctl 2>/dev/null || true
+ln -sf /sbin/initctl /usr/bin/initctl  2>/dev/null || true
+ln -sf /sbin/initctl /bin/initctl      2>/dev/null || true
+
 # ── Containerd compatibility for oci-monitor staging ──────────────────────
 # oci-monitor stages px-runc by running nsenter -t 1 -m to enter the HOST
 # (this k3d node container) mount namespace.  In that host-side context it

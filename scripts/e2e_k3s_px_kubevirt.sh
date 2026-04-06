@@ -280,9 +280,12 @@ mkdir -p /usr/local/bin
 cat > /usr/local/bin/systemctl << 'SHIM'
 #!/bin/sh
 # k3d systemctl shim for Portworx oci-monitor.
-# oci-monitor runs: nsenter -t 1 -m -- /bin/sh -c 'systemctl show-environment'
-# It parses the KEY=VALUE output; an empty or missing response fails the check.
-case \"\$1\" in
+# oci-monitor triggers the check in two ways:
+#   Direct: systemctl show-environment         -> $1=show-environment
+#   Via sh: /bin/sh -c systemctl show-environment -> sh runs systemctl with
+#           "show-environment" as $0 of the sh session, NOT as $1 to this script.
+# Use ${1:-show-environment} so both conventions return KEY=VALUE output.
+case \"\${1:-show-environment}\" in
   show-environment)
     echo 'LANG=C.UTF-8'
     echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'

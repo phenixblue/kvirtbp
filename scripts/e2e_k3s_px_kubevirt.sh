@@ -302,6 +302,27 @@ chmod +x /usr/local/bin/systemctl
 ln -sf /usr/local/bin/systemctl /usr/bin/systemctl 2>/dev/null || true
 ln -sf /usr/local/bin/systemctl /bin/systemctl 2>/dev/null || true
 
+# ── Containerd compatibility for oci-monitor staging ──────────────────────
+# oci-monitor stages px-runc by running nsenter -t 1 -m to enter the HOST
+# (this k3d node container) mount namespace.  In that host-side context it
+# probes containerd using CRI_SOCKET_PATH=/run/containerd/containerd.sock
+# (the standard path).  k3s puts containerd at /run/k3s/containerd/... so
+# the socket is missing, the pull silently fails, and the binary is never
+# staged — producing the "failed to execute px-runc: No such file" error.
+#
+# Fix: create a symlink from the standard socket path to the k3s path, and
+# bind-mount the k3s containerd data dir over /var/lib/containerd so that
+# oci-monitor can access image snapshots/content after the pull.
+
+echo 'Creating containerd compatibility symlinks/mounts for Portworx oci-monitor'
+mkdir -p /run/containerd
+ln -sf /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock 2>/dev/null || true
+
+mkdir -p /var/lib/containerd
+if ! grep -q ' /var/lib/containerd ' /proc/mounts 2>/dev/null; then
+  mount --bind /var/lib/rancher/k3s/agent/containerd /var/lib/containerd 2>/dev/null || true
+fi
+
 echo 'Worker node prep complete'
 "
 done

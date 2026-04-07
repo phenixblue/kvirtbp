@@ -37,7 +37,20 @@ ctx = ssl.create_default_context(cafile=SAR + '/ca.crt')
 
 
 def _ws_exec(ns, pod_name, cmd):
-    """Run cmd in pod_name via K8s WebSocket exec API. Returns stdout bytes."""
+    """Run cmd in pod_name via K8s WebSocket exec API.
+
+    Returns (stdout_bytes, stderr_bytes).  Captures both streams so that
+    callers can fall back to stderr when the command writes JSON there
+    (observed on some pxctl versions).
+
+    Key design decisions:
+      - Does NOT early-return on channel-3 (K8s process-exit status): that
+        message can arrive before the last stdout/stderr frames are flushed,
+        so we keep draining until the WebSocket close frame (opcode 8) or the
+        TCP connection drops.
+      - Uses a 64 KiB recv buffer so large outputs (pxctl status is ~56 KiB)
+        fit in as few recv calls as possible.
+    """
     qs = '&'.join(
         ['command=' + _up.quote(c) for c in cmd] +
         ['stdout=true', 'stderr=true', 'stdin=false', 'tty=false']
@@ -50,8 +63,10 @@ def _ws_exec(ns, pod_name, cmd):
             server_hostname=h,
         )
     except Exception:
-        return b''
-    sock.settimeout(60)
+        return b'', b''
+    sock.settimeout(90)
+    stdout = b''
+    stderr = b''
     try:
         ws_key = base64.b64encode(os.urandom(16)).decode()
         req = (
@@ -68,57 +83,73 @@ def _ws_exec(ns, pod_name, cmd):
         sock.sendall(req)
         buf = b''
         while b'\r\n\r\n' not in buf:
-            chunk = sock.recv(4096)
+            chunk = sock.recv(65536)
             if not chunk:
-                return b''
+                return b'', b''
             buf += chunk
         head, buf = buf.split(b'\r\n\r\n', 1)
         if b' 101 ' not in head.split(b'\r\n')[0]:
-            return b''
-        stdout = b''
+            return b'', b''
         while True:
+            # Read at least 2 bytes for the WebSocket frame header.
             while len(buf) < 2:
-                c = sock.recv(4096)
+                try:
+                    c = sock.recv(65536)
+                except Exception:
+                    return stdout, stderr
                 if not c:
-                    return stdout
+                    return stdout, stderr
                 buf += c
             opcode = buf[0] & 0x0f
-            if opcode == 8:   # WebSocket close frame
-                return stdout
+            if opcode == 8:   # WebSocket close frame — connection done
+                return stdout, stderr
             plen = buf[1] & 0x7f
             hlen = 2
             if plen == 126:
                 while len(buf) < 4:
-                    c = sock.recv(4096)
+                    try:
+                        c = sock.recv(65536)
+                    except Exception:
+                        return stdout, stderr
                     if not c:
-                        return stdout
+                        return stdout, stderr
                     buf += c
                 plen = struct.unpack('>H', buf[2:4])[0]
                 hlen = 4
             elif plen == 127:
                 while len(buf) < 10:
-                    c = sock.recv(4096)
+                    try:
+                        c = sock.recv(65536)
+                    except Exception:
+                        return stdout, stderr
                     if not c:
-                        return stdout
+                        return stdout, stderr
                     buf += c
                 plen = struct.unpack('>Q', buf[2:10])[0]
                 hlen = 10
             total_frame = hlen + plen
             while len(buf) < total_frame:
-                c = sock.recv(4096)
+                try:
+                    c = sock.recv(65536)
+                except Exception:
+                    return stdout, stderr
                 if not c:
-                    return stdout
+                    return stdout, stderr
                 buf += c
             payload = buf[hlen:total_frame]
             buf = buf[total_frame:]
-            if payload:
+            # K8s channel byte: 1=stdout, 2=stderr, 3=process-exit-status.
+            # opcode 0=continuation, 1=text, 2=binary — all carry K8s channel data.
+            if payload and opcode in (0x0, 0x1, 0x2):
                 ch = payload[0]
-                if ch == 1:       # stdout channel
+                if ch == 1:
                     stdout += payload[1:]
-                elif ch == 3:     # error/EOF signal
-                    return stdout
+                elif ch == 2:
+                    stderr += payload[1:]
+                # ch==3 is the exit-status JSON; we ignore it and keep looping
+                # until the actual WebSocket close frame arrives.
     except Exception:
-        return stdout
+        return stdout, stderr
     finally:
         try:
             sock.close()
@@ -240,7 +271,10 @@ pvcs = [
 pxctl_status = {}
 _px_ns, _px_pod = _find_px_pod()
 if _px_ns and _px_pod:
-    _raw = _ws_exec(_px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'])
+    _raw_out, _raw_err = _ws_exec(_px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'])
+    # Use stdout if it has content, else fall back to stderr — some pxctl
+    # versions write the JSON blob to stderr instead of stdout.
+    _raw = _raw_out or _raw_err
     if _raw:
         try:
             _d = json.loads(_raw)
@@ -275,7 +309,7 @@ if _px_ns and _px_pod:
         except Exception as _exc:
             pxctl_status = {'_error': 'parse_failed: ' + str(_exc)}
     else:
-        pxctl_status = {'_error': 'exec_failed: no output from pxctl status --json'}
+        pxctl_status = {'_error': 'exec_failed: no output on stdout or stderr from pxctl status --json'}
 else:
     pxctl_status = {'_error': 'pod_not_found: no running portworx pod found in kube-system or portworx namespace'}
 

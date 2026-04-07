@@ -11,6 +11,27 @@ import (
 	"github.com/phenixblue/kvirtbp/internal/checks"
 )
 
+const msgWrapWidth = 120
+
+func wrapText(s string, width int) string {
+	if len(s) <= width {
+		return s
+	}
+	var lines []string
+	for len(s) > width {
+		idx := strings.LastIndex(s[:width+1], " ")
+		if idx <= 0 {
+			idx = width
+		}
+		lines = append(lines, s[:idx])
+		s = strings.TrimLeft(s[idx:], " ")
+	}
+	if s != "" {
+		lines = append(lines, s)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func WriteTable(out io.Writer, result checks.RunResult) error {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("24")).Padding(0, 1).Align(lipgloss.Center)
@@ -96,7 +117,7 @@ func WriteTable(out io.Writer, result checks.RunResult) error {
 			f.Category,
 			strings.ToUpper(string(f.Severity)),
 			passText,
-			msg,
+			wrapText(msg, msgWrapWidth),
 		)
 
 		if f.Pass || f.Waived {

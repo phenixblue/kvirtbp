@@ -6,7 +6,7 @@
       "name": "node-info",
       "image": "alpine:3.21",
       "commands": [
-        "printf '{\"kernel\":\"%s\",\"arch\":\"%s\"}\\n' \"$(uname -r)\" \"$(uname -m)\" > /kvirtbp/output.json"
+        "mkdir -p /tmp/kvirtbp && printf '{\"kernel\":\"%s\",\"arch\":\"%s\"}\\n' \"$(uname -r)\" \"$(uname -m)\" > /tmp/kvirtbp/output.json"
       ],
       "scope": "per-node",
       "tolerations": [{"operator": "Exists"}]

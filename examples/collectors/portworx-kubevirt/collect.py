@@ -2,7 +2,7 @@
 portworx-kubevirt collector script
 ===================================
 Queries the Kubernetes API from inside the collector pod using the in-cluster
-service account token. Writes a JSON snapshot to /kvirtbp/output.json.
+service account token. Writes a JSON snapshot to /tmp/kvirtbp/output.json.
 
 This file is the human-readable source for the base64-encoded command embedded
 in metadata.json. To regenerate the base64 payload:
@@ -102,6 +102,8 @@ pvcs = [
 ]
 
 # ── Output ─────────────────────────────────────────────────────────────────────
+import os as _os
+_os.makedirs('/tmp/kvirtbp', exist_ok=True)
 json.dump(
     {
         'storageClasses':   px_scs,
@@ -109,5 +111,5 @@ json.dump(
         'storageClusters':  clusters,
         'pvcs':             pvcs,
     },
-    open('/kvirtbp/output.json', 'w'),
+    open('/tmp/kvirtbp/output.json', 'w'),
 )

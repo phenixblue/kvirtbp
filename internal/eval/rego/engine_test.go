@@ -221,7 +221,7 @@ func TestCollectorsFromBundle_WithCollectors(t *testing.T) {
 	meta := `{
 		"schemaVersion": "v1alpha1",
 		"collectors": [
-			{"name": "sysctl", "image": "alpine", "scope": "per-node", "commands": ["sysctl -a > /kvirtbp/output.json"]}
+			{"name": "sysctl", "image": "alpine", "scope": "per-node", "commands": ["sysctl -a > /tmp/kvirtbp/output.json"]}
 		]
 	}`
 	if err := os.WriteFile(filepath.Join(tmp, "metadata.json"), []byte(meta), 0o644); err != nil {

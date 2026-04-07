@@ -4,7 +4,7 @@
 #
 # Collector: "node-info" (scope: per-node)
 #   Runs one Job per node using alpine:3.21.  Each Job writes the node's
-#   kernel version and CPU architecture to /kvirtbp/output.json with a
+#   kernel version and CPU architecture to /tmp/kvirtbp/output.json with a
 #   single printf command — no extra packages required.
 #
 #   Collected data shape (input.cluster.collectors["node-info"]):

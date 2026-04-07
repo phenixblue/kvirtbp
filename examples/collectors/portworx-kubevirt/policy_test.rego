@@ -69,6 +69,24 @@ input_compliant := {
 							"volumeMode":       "Block",
 						},
 					],
+					"pxctlStatus": {
+						"clusterStatus":        "STATUS_OK",
+						"license":              "PX-Enterprise (expires in 354 days)",
+						"licenseDaysRemaining": 354,
+						"storev2":              true,
+						"globalTotalBytes":     1000000,
+						"globalUsedBytes":      100000,
+						"nodes": [
+							{
+								"name":                    "node1",
+								"status":                  2,
+								"storageStatus":            "Up",
+								"pools":                   [{"totalSize": 1000000, "used": 100000}],
+								"metadataDevicePresent":   true,
+								"metadataDeviceSizeBytes": 68719476736,
+							},
+						],
+					},
 				},
 			},
 		},
@@ -706,4 +724,314 @@ test_version_prerelease_pass if {
 # Pre-release patch that is numerically below minimum should still fail.
 test_version_prerelease_fail if {
 	not data.kvirtbp.version_gte("3.2.9-rc1", "3.3.0")
+}
+
+# ===========================================================================
+# Checks 13-18: pxctl status checks
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helper: build a minimal collector input with a given pxctlStatus object.
+# ---------------------------------------------------------------------------
+
+_pxctl_only(ps) := {
+	"cluster": {
+		"collectors": {
+			"portworx-kubevirt": {
+				"_cluster": {
+					"storageClasses":  [],
+					"storageProfiles": [],
+					"storageClusters": [],
+					"pvcs":            [],
+					"pxctlStatus":     ps,
+				},
+			},
+		},
+	},
+}
+
+_good_pxctl := {
+	"clusterStatus":        "STATUS_OK",
+	"license":              "PX-Enterprise (expires in 100 days)",
+	"licenseDaysRemaining": 100,
+	"storev2":              true,
+	"globalTotalBytes":     1000000,
+	"globalUsedBytes":      100000,
+	"nodes": [
+		{
+			"name":                    "node1",
+			"status":                  2,
+			"storageStatus":            "Up",
+			"pools":                   [{"totalSize": 1000000, "used": 100000}],
+			"metadataDevicePresent":   true,
+			"metadataDeviceSizeBytes": 68719476736,
+		},
+	],
+}
+
+# ---------------------------------------------------------------------------
+# Check 13: cluster status
+# ---------------------------------------------------------------------------
+
+test_cluster_status_ok if {
+	findings := data.kvirtbp.cluster_findings with input as input_compliant
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-cluster-status"]
+	count(fs) == 1
+	fs[0].pass == true
+	fs[0].reasonCode == "prod.px.kubevirt.cluster_status.ok"
+}
+
+test_cluster_status_fail if {
+	inp := _pxctl_only(object.union(_good_pxctl, {"clusterStatus": "STATUS_NOT_OK"}))
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-cluster-status"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "error"
+	fs[0].reasonCode == "prod.px.kubevirt.cluster_status.degraded"
+}
+
+test_cluster_status_pxctl_unavailable if {
+	inp := _pxctl_only({"_error": "pod_not_found"})
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-cluster-status"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "warning"
+	fs[0].reasonCode == "prod.px.kubevirt.cluster_status.unavailable"
+}
+
+# ---------------------------------------------------------------------------
+# Check 14: license expiry
+# ---------------------------------------------------------------------------
+
+test_license_ok if {
+	findings := data.kvirtbp.cluster_findings with input as input_compliant
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-license-expiry"]
+	count(fs) == 1
+	fs[0].pass == true
+	fs[0].reasonCode == "prod.px.kubevirt.license.ok"
+}
+
+test_license_permanent if {
+	inp := _pxctl_only(object.union(_good_pxctl, {
+		"license":              "PX-Enterprise permanent",
+		"licenseDaysRemaining": 99999,
+	}))
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-license-expiry"]
+	count(fs) == 1
+	fs[0].pass == true
+	fs[0].reasonCode == "prod.px.kubevirt.license.permanent"
+}
+
+test_license_expiring_soon_fail if {
+	inp := _pxctl_only(object.union(_good_pxctl, {
+		"license":              "PX-Enterprise (expires in 15 days)",
+		"licenseDaysRemaining": 15,
+	}))
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-license-expiry"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "warning"
+	fs[0].reasonCode == "prod.px.kubevirt.license.expiring_soon"
+}
+
+test_license_expired_fail if {
+	inp := _pxctl_only(object.union(_good_pxctl, {
+		"license":              "PX-Enterprise (expired)",
+		"licenseDaysRemaining": 0,
+	}))
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-license-expiry"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "error"
+	fs[0].reasonCode == "prod.px.kubevirt.license.expired"
+}
+
+# ---------------------------------------------------------------------------
+# Check 15: global pool free space
+# ---------------------------------------------------------------------------
+
+test_global_pool_ok if {
+	findings := data.kvirtbp.cluster_findings with input as input_compliant
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-global-pool-free"]
+	count(fs) == 1
+	fs[0].pass == true
+}
+
+# 85% used → 15% free < 20% — fail
+test_global_pool_low_fail if {
+	inp := _pxctl_only(object.union(_good_pxctl, {
+		"globalTotalBytes": 1000,
+		"globalUsedBytes":  850,
+	}))
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-global-pool-free"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "warning"
+	fs[0].reasonCode == "prod.px.kubevirt.global_pool.low"
+}
+
+# Exactly 20% free — pass
+test_global_pool_boundary_pass if {
+	inp := _pxctl_only(object.union(_good_pxctl, {
+		"globalTotalBytes": 100,
+		"globalUsedBytes":  80,
+	}))
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-global-pool-free"]
+	count(fs) == 1
+	fs[0].pass == true
+}
+
+# ---------------------------------------------------------------------------
+# Check 16: local pool free space
+# ---------------------------------------------------------------------------
+
+test_local_pool_ok if {
+	findings := data.kvirtbp.cluster_findings with input as input_compliant
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-local-pool-free"]
+	count(fs) == 1
+	fs[0].pass == true
+}
+
+# One node with 85% used pool — fail
+test_local_pool_low_fail if {
+	ps := object.union(_good_pxctl, {"nodes": [
+		{
+			"name":                    "node1",
+			"status":                  2,
+			"storageStatus":            "Up",
+			"pools":                   [{"totalSize": 1000, "used": 850}],
+			"metadataDevicePresent":   true,
+			"metadataDeviceSizeBytes": 68719476736,
+		},
+	]})
+	inp := _pxctl_only(ps)
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-local-pool-free"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "warning"
+}
+
+# ---------------------------------------------------------------------------
+# Check 17: storev2 metadata device size
+# ---------------------------------------------------------------------------
+
+test_storev2_metadata_ok if {
+	findings := data.kvirtbp.cluster_findings with input as input_compliant
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-storev2-metadata"]
+	count(fs) == 1
+	fs[0].pass == true
+	fs[0].reasonCode == "prod.px.kubevirt.storev2_metadata.ok"
+}
+
+# storev2=true, node has metadata device below 64 GiB (8 GiB)
+test_storev2_metadata_undersized_fail if {
+	ps := object.union(_good_pxctl, {"nodes": [
+		{
+			"name":                    "node1",
+			"status":                  2,
+			"storageStatus":            "Up",
+			"pools":                   [{"totalSize": 1000000, "used": 100000}],
+			"metadataDevicePresent":   true,
+			"metadataDeviceSizeBytes": 8589934592,
+		},
+	]})
+	inp := _pxctl_only(ps)
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-storev2-metadata"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "error"
+	fs[0].reasonCode == "prod.px.kubevirt.storev2_metadata.undersized"
+}
+
+# storev2=false — not applicable, should pass
+test_storev2_not_in_use_skip if {
+	ps := object.union(_good_pxctl, {"storev2": false})
+	inp := _pxctl_only(ps)
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-storev2-metadata"]
+	count(fs) == 1
+	fs[0].pass == true
+	fs[0].reasonCode == "prod.px.kubevirt.storev2_metadata.not_applicable"
+}
+
+# storev2=true, node with no metadata device (size 0) — fail
+test_storev2_metadata_absent_fail if {
+	ps := object.union(_good_pxctl, {"nodes": [
+		{
+			"name":                    "node1",
+			"status":                  2,
+			"storageStatus":            "Up",
+			"pools":                   [{"totalSize": 1000000, "used": 100000}],
+			"metadataDevicePresent":   false,
+			"metadataDeviceSizeBytes": 0,
+		},
+	]})
+	inp := _pxctl_only(ps)
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-storev2-metadata"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "error"
+}
+
+# ---------------------------------------------------------------------------
+# Check 18: storage node health
+# ---------------------------------------------------------------------------
+
+test_node_health_ok if {
+	findings := data.kvirtbp.cluster_findings with input as input_compliant
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-node-health"]
+	count(fs) == 1
+	fs[0].pass == true
+	fs[0].reasonCode == "prod.px.kubevirt.node_health.ok"
+}
+
+# Node with status != 2 (offline)
+test_node_health_offline_fail if {
+	ps := object.union(_good_pxctl, {"nodes": [
+		{
+			"name":                    "node1",
+			"status":                  0,
+			"storageStatus":            "Up",
+			"pools":                   [{"totalSize": 1000000, "used": 100000}],
+			"metadataDevicePresent":   true,
+			"metadataDeviceSizeBytes": 68719476736,
+		},
+	]})
+	inp := _pxctl_only(ps)
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-node-health"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "error"
+	fs[0].reasonCode == "prod.px.kubevirt.node_health.degraded"
+}
+
+# Node with storageStatus != "Up"
+test_node_health_storage_down_fail if {
+	ps := object.union(_good_pxctl, {"nodes": [
+		{
+			"name":                    "node1",
+			"status":                  2,
+			"storageStatus":            "Down",
+			"pools":                   [{"totalSize": 1000000, "used": 100000}],
+			"metadataDevicePresent":   true,
+			"metadataDeviceSizeBytes": 68719476736,
+		},
+	]})
+	inp := _pxctl_only(ps)
+	findings := data.kvirtbp.cluster_findings with input as inp
+	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-node-health"]
+	count(fs) == 1
+	fs[0].pass == false
+	fs[0].severity == "error"
 }

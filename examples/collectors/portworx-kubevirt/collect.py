@@ -26,7 +26,7 @@ See rbac.yaml — ClusterRole needs get/list on:
   storageprofiles (cdi.kubevirt.io/v1beta1)
 """
 
-import json, os, ssl, urllib.request as u
+import base64, json, os, re as _re, socket, ssl, struct, urllib.parse as _up, urllib.request as u
 
 SAR = '/var/run/secrets/kubernetes.io/serviceaccount'
 tok = open(SAR + '/token').read().strip()
@@ -34,6 +34,117 @@ h = os.environ.get('KUBERNETES_SERVICE_HOST', 'kubernetes.default.svc')
 p = os.environ.get('KUBERNETES_SERVICE_PORT', '443')
 BASE = 'https://' + h + ':' + p
 ctx = ssl.create_default_context(cafile=SAR + '/ca.crt')
+
+
+def _ws_exec(ns, pod_name, cmd):
+    """Run cmd in pod_name via K8s WebSocket exec API. Returns stdout bytes."""
+    qs = '&'.join(
+        ['command=' + _up.quote(c) for c in cmd] +
+        ['stdout=true', 'stderr=true', 'stdin=false', 'tty=false']
+    )
+    path = '/api/v1/namespaces/{}/pods/{}/exec?{}'.format(ns, pod_name, qs)
+    ctx2 = ssl.create_default_context(cafile=SAR + '/ca.crt')
+    try:
+        sock = ctx2.wrap_socket(
+            socket.create_connection((h, int(p)), timeout=30),
+            server_hostname=h,
+        )
+    except Exception:
+        return b''
+    sock.settimeout(60)
+    try:
+        ws_key = base64.b64encode(os.urandom(16)).decode()
+        req = (
+            'GET {path} HTTP/1.1\r\n'
+            'Host: {h}:{p}\r\n'
+            'Authorization: Bearer {tok}\r\n'
+            'Upgrade: websocket\r\n'
+            'Connection: Upgrade\r\n'
+            'Sec-WebSocket-Key: {key}\r\n'
+            'Sec-WebSocket-Version: 13\r\n'
+            'Sec-WebSocket-Protocol: channel.k8s.io\r\n'
+            '\r\n'
+        ).format(path=path, h=h, p=p, tok=tok, key=ws_key).encode()
+        sock.sendall(req)
+        buf = b''
+        while b'\r\n\r\n' not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return b''
+            buf += chunk
+        head, buf = buf.split(b'\r\n\r\n', 1)
+        if b' 101 ' not in head.split(b'\r\n')[0]:
+            return b''
+        stdout = b''
+        while True:
+            while len(buf) < 2:
+                c = sock.recv(4096)
+                if not c:
+                    return stdout
+                buf += c
+            opcode = buf[0] & 0x0f
+            if opcode == 8:   # WebSocket close frame
+                return stdout
+            plen = buf[1] & 0x7f
+            hlen = 2
+            if plen == 126:
+                while len(buf) < 4:
+                    c = sock.recv(4096)
+                    if not c:
+                        return stdout
+                    buf += c
+                plen = struct.unpack('>H', buf[2:4])[0]
+                hlen = 4
+            elif plen == 127:
+                while len(buf) < 10:
+                    c = sock.recv(4096)
+                    if not c:
+                        return stdout
+                    buf += c
+                plen = struct.unpack('>Q', buf[2:10])[0]
+                hlen = 10
+            total_frame = hlen + plen
+            while len(buf) < total_frame:
+                c = sock.recv(4096)
+                if not c:
+                    return stdout
+                buf += c
+            payload = buf[hlen:total_frame]
+            buf = buf[total_frame:]
+            if payload:
+                ch = payload[0]
+                if ch == 1:       # stdout channel
+                    stdout += payload[1:]
+                elif ch == 3:     # error/EOF signal
+                    return stdout
+    except Exception:
+        return stdout
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _find_px_pod():
+    """Return (namespace, pod_name) of a running portworx pod, or (None, None)."""
+    for ns in ('kube-system', 'portworx'):
+        for sel in ('name=portworx', 'app=portworx'):
+            resp = get('/api/v1/namespaces/{}/pods?labelSelector={}'.format(
+                ns, _up.quote(sel)))
+            for pod in resp.get('items', []):
+                if pod.get('status', {}).get('phase') == 'Running':
+                    return ns, pod['metadata']['name']
+    return None, None
+
+
+def _license_days(lic_str):
+    m = _re.search(r'expires in (\d+) days', str(lic_str))
+    if m:
+        return int(m.group(1))
+    if any(w in str(lic_str).lower() for w in ('permanent', 'never', 'no expiry')):
+        return 99999
+    return 0
 
 
 def get(path):
@@ -125,6 +236,49 @@ pvcs = [
     for pvc in pvc_list.get('items', [])
 ]
 
+# ── pxctl status ───────────────────────────────────────────────────────────────
+pxctl_status = {}
+_px_ns, _px_pod = _find_px_pod()
+if _px_ns and _px_pod:
+    _raw = _ws_exec(_px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'])
+    if _raw:
+        try:
+            _d = json.loads(_raw)
+            _nodes = []
+            for _n in _d.get('cluster', {}).get('Nodes', []):
+                _si = _n.get('NodeData', {}).get('STORAGE-INFO', {})
+                _rsm = _si.get('ResourceSystemMetadata', {})
+                _pools = [
+                    {'totalSize': _pl.get('TotalSize', 0), 'used': _pl.get('Used', 0)}
+                    for _pl in _n.get('Pools', [])
+                ]
+                _nodes.append({
+                    'name':                    _n.get('SchedulerNodeName') or _n.get('Id', ''),
+                    'status':                  _n.get('Status', 0),
+                    'storageStatus':           _si.get('Status', ''),
+                    'pools':                   _pools,
+                    'metadataDevicePresent':   bool(_rsm.get('metadata', False)),
+                    'metadataDeviceSizeBytes': _rsm.get('size', 0),
+                })
+            _lic = _d.get('license', '')
+            _sv = (_d.get('daemoninfo', {}).get('StorageSpec', {})
+                     .get('StorageVol', '') == '/var/.px')
+            pxctl_status = {
+                'clusterStatus':        _d.get('status', ''),
+                'license':              _lic,
+                'licenseDaysRemaining': _license_days(_lic),
+                'storev2':              _sv,
+                'globalTotalBytes':     sum(_pl['totalSize'] for _nd in _nodes for _pl in _nd['pools']),
+                'globalUsedBytes':      sum(_pl['used']      for _nd in _nodes for _pl in _nd['pools']),
+                'nodes':                _nodes,
+            }
+        except Exception as _exc:
+            pxctl_status = {'_error': 'parse_failed: ' + str(_exc)}
+    else:
+        pxctl_status = {'_error': 'exec_failed: no output from pxctl status --json'}
+else:
+    pxctl_status = {'_error': 'pod_not_found: no running portworx pod found in kube-system or portworx namespace'}
+
 # ── Output ─────────────────────────────────────────────────────────────────────
 import os as _os
 _os.makedirs('/tmp/kvirtbp', exist_ok=True)
@@ -134,6 +288,7 @@ json.dump(
         'storageProfiles':  profiles,
         'storageClusters':  clusters,
         'pvcs':             pvcs,
+        'pxctlStatus':      pxctl_status,
     },
     open('/tmp/kvirtbp/output.json', 'w'),
 )

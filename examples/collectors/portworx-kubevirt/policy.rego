@@ -58,6 +58,12 @@
 #   prod-px-kubevirt-px-version         — Portworx Enterprise >= 3.3.0
 #   prod-px-kubevirt-operator-version   — Portworx Operator >= 25.2.1
 #   prod-px-kubevirt-stork-version      — Portworx Stork >= 25.2.0
+#   prod-px-kubevirt-cluster-status     — Portworx cluster operational (STATUS_OK)
+#   prod-px-kubevirt-license-expiry     — license expires in > 30 days
+#   prod-px-kubevirt-global-pool-free   — global storage pool >= 20% free
+#   prod-px-kubevirt-local-pool-free    — each local storage pool >= 20% free
+#   prod-px-kubevirt-storev2-metadata   — storev2 nodes have metadata device >= 64 GiB
+#   prod-px-kubevirt-node-health        — all storage nodes online with storage status Up
 #
 # References:
 #   https://docs.portworx.com/portworx-enterprise/provision-storage/kubevirt-vms/
@@ -812,6 +818,431 @@ stork_version_findings := [] if {
 }
 
 # ---------------------------------------------------------------------------
+# pxctl status accessor
+#
+# pxctl status --json is collected by running the binary inside a portworx
+# pod via the K8s exec API. The parsed result is stored under pxctlStatus in
+# the collector output. If the exec failed (pod not found, RBAC missing, etc.)
+# the dict will contain only the "_error" key and pxctl_present will be false.
+# ---------------------------------------------------------------------------
+
+px_pxctl := object.get(px_data, "pxctlStatus", {})
+
+pxctl_present if {
+	count(object.keys(px_pxctl)) > 0
+	not object.get(px_pxctl, "_error", false)
+}
+
+# ---------------------------------------------------------------------------
+# Check 13: Portworx cluster is operational (status == STATUS_OK)
+# ---------------------------------------------------------------------------
+
+cluster_status_findings := [{
+	"checkId":    "prod-px-kubevirt-cluster-status",
+	"title":      "Portworx Cluster Operational Status",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.cluster_status.ok",
+	"message":    "Portworx cluster is operational (STATUS_OK)",
+}] if {
+	pxctl_present
+	px_pxctl.clusterStatus == "STATUS_OK"
+}
+
+cluster_status_findings := [{
+	"checkId":     "prod-px-kubevirt-cluster-status",
+	"title":       "Portworx Cluster Operational Status",
+	"category":    "production-readiness",
+	"severity":    "error",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.cluster_status.degraded",
+	"message":     sprintf("Portworx cluster status is not operational: %v", [px_pxctl.clusterStatus]),
+	"evidence":    {"clusterStatus": sprintf("%v", [px_pxctl.clusterStatus])},
+	"remediation": "Investigate the Portworx cluster status with 'pxctl status'. All storage nodes must be reachable and quorum must be met.",
+}] if {
+	pxctl_present
+	px_pxctl.clusterStatus != "STATUS_OK"
+}
+
+cluster_status_findings := [{
+	"checkId":     "prod-px-kubevirt-cluster-status",
+	"title":       "Portworx Cluster Operational Status",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.cluster_status.unavailable",
+	"message":     sprintf("pxctl status data unavailable (%v); cannot verify cluster status", [object.get(px_pxctl, "_error", "collector not run")]),
+	"remediation": "Ensure the RBAC rules in rbac.yaml grant pods (get, list) and pods/exec (create). Re-run the collector.",
+}] if {
+	collector_present
+	not pxctl_present
+}
+
+cluster_status_findings := [] if { not collector_present }
+
+# ---------------------------------------------------------------------------
+# Check 14: Portworx license expires in > 30 days
+# ---------------------------------------------------------------------------
+
+license_findings := [{
+	"checkId":    "prod-px-kubevirt-license-expiry",
+	"title":      "Portworx License Expiry",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.license.permanent",
+	"message":    sprintf("Portworx license is permanent/perpetual: %v", [px_pxctl.license]),
+}] if {
+	pxctl_present
+	px_pxctl.licenseDaysRemaining >= 9999
+}
+
+license_findings := [{
+	"checkId":    "prod-px-kubevirt-license-expiry",
+	"title":      "Portworx License Expiry",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.license.ok",
+	"message":    sprintf("Portworx license expires in %d days", [px_pxctl.licenseDaysRemaining]),
+}] if {
+	pxctl_present
+	px_pxctl.licenseDaysRemaining < 9999
+	px_pxctl.licenseDaysRemaining > 30
+}
+
+license_findings := [{
+	"checkId":     "prod-px-kubevirt-license-expiry",
+	"title":       "Portworx License Expiry",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.license.expiring_soon",
+	"message":     sprintf("Portworx license expires in %d day(s); renew immediately to prevent service disruption", [px_pxctl.licenseDaysRemaining]),
+	"evidence":    {"daysRemaining": sprintf("%d", [px_pxctl.licenseDaysRemaining])},
+	"remediation": "Renew the Portworx license before it expires. Contact your Portworx account team or see https://docs.portworx.com/portworx-enterprise/operations/licensing/",
+}] if {
+	pxctl_present
+	px_pxctl.licenseDaysRemaining < 9999
+	px_pxctl.licenseDaysRemaining > 0
+	px_pxctl.licenseDaysRemaining <= 30
+}
+
+license_findings := [{
+	"checkId":     "prod-px-kubevirt-license-expiry",
+	"title":       "Portworx License Expiry",
+	"category":    "production-readiness",
+	"severity":    "error",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.license.expired",
+	"message":     sprintf("Portworx license has expired or could not be parsed: %v", [px_pxctl.license]),
+	"evidence":    {"license": sprintf("%v", [px_pxctl.license])},
+	"remediation": "Renew the Portworx license immediately. Service degradation or data unavailability may already be occurring.",
+}] if {
+	pxctl_present
+	px_pxctl.licenseDaysRemaining < 9999
+	px_pxctl.licenseDaysRemaining == 0
+}
+
+license_findings := [{
+	"checkId":     "prod-px-kubevirt-license-expiry",
+	"title":       "Portworx License Expiry",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.license.unavailable",
+	"message":     "pxctl status data unavailable; cannot verify license expiry",
+	"remediation": "Re-run the collector with the required RBAC permissions (pods get/list, pods/exec create).",
+}] if {
+	collector_present
+	not pxctl_present
+}
+
+license_findings := [] if { not collector_present }
+
+# ---------------------------------------------------------------------------
+# Check 15: Global storage pools have at least 20% free space
+#
+# Portworx volume provisioning will fail when the global pool is near full.
+# 20% headroom is the recommended operational minimum.
+# ---------------------------------------------------------------------------
+
+_pool_min_free_pct := 20
+
+global_pool_free_pct := (px_pxctl.globalTotalBytes - px_pxctl.globalUsedBytes) * 100 / px_pxctl.globalTotalBytes if {
+	px_pxctl.globalTotalBytes > 0
+}
+
+global_pool_findings := [{
+	"checkId":    "prod-px-kubevirt-global-pool-free",
+	"title":      "Portworx Global Storage Pool Free Space",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.global_pool.ok",
+	"message":    sprintf("global storage pool has %d%% free space (minimum %d%%)", [global_pool_free_pct, _pool_min_free_pct]),
+}] if {
+	pxctl_present
+	px_pxctl.globalTotalBytes > 0
+	global_pool_free_pct >= _pool_min_free_pct
+}
+
+global_pool_findings := [{
+	"checkId":     "prod-px-kubevirt-global-pool-free",
+	"title":       "Portworx Global Storage Pool Free Space",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.global_pool.low",
+	"message":     sprintf("global storage pool has only %d%% free space (minimum %d%%)", [global_pool_free_pct, _pool_min_free_pct]),
+	"evidence":    {"freePercent": sprintf("%d", [global_pool_free_pct])},
+	"remediation": "Add storage capacity to the Portworx cluster or reduce usage. Below 20% free space may cause volume provisioning failures.",
+}] if {
+	pxctl_present
+	px_pxctl.globalTotalBytes > 0
+	global_pool_free_pct < _pool_min_free_pct
+}
+
+global_pool_findings := [{
+	"checkId":    "prod-px-kubevirt-global-pool-free",
+	"title":      "Portworx Global Storage Pool Free Space",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.global_pool.no_storage",
+	"message":    "no storage pools reported; cluster may have no storage nodes",
+}] if {
+	pxctl_present
+	px_pxctl.globalTotalBytes == 0
+}
+
+global_pool_findings := [{
+	"checkId":     "prod-px-kubevirt-global-pool-free",
+	"title":       "Portworx Global Storage Pool Free Space",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.global_pool.unavailable",
+	"message":     "pxctl status data unavailable; cannot verify global pool free space",
+	"remediation": "Re-run the collector with the required RBAC permissions.",
+}] if {
+	collector_present
+	not pxctl_present
+}
+
+global_pool_findings := [] if { not collector_present }
+
+# ---------------------------------------------------------------------------
+# Check 16: Each local storage pool has at least 20% free space
+#
+# An individual pool that is nearly full can block volume creation on that
+# node even when global capacity is available.
+# ---------------------------------------------------------------------------
+
+local_pool_violations := [msg |
+	some n in px_pxctl.nodes
+	some i, pool in n.pools
+	pool.totalSize > 0
+	free_pct := (pool.totalSize - pool.used) * 100 / pool.totalSize
+	free_pct < _pool_min_free_pct
+	msg := sprintf("%s pool-%d: %d%% free", [n.name, i, free_pct])
+]
+
+local_pool_findings := [{
+	"checkId":    "prod-px-kubevirt-local-pool-free",
+	"title":      "Portworx Local Storage Pool Free Space",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.local_pool.ok",
+	"message":    "all local storage pools have >= 20% free space",
+}] if {
+	pxctl_present
+	count(px_pxctl.nodes) > 0
+	count(local_pool_violations) == 0
+}
+
+local_pool_findings := [{
+	"checkId":     "prod-px-kubevirt-local-pool-free",
+	"title":       "Portworx Local Storage Pool Free Space",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.local_pool.low",
+	"message":     sprintf("%d pool(s) below %d%% free space: %v", [count(local_pool_violations), _pool_min_free_pct, local_pool_violations]),
+	"evidence":    {"violating": sprintf("%v", [local_pool_violations])},
+	"remediation": "Expand capacity of the affected pools (pxctl pool expand) or migrate data to other nodes.",
+}] if {
+	pxctl_present
+	count(local_pool_violations) > 0
+}
+
+local_pool_findings := [{
+	"checkId":     "prod-px-kubevirt-local-pool-free",
+	"title":       "Portworx Local Storage Pool Free Space",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.local_pool.unavailable",
+	"message":     "pxctl status data unavailable; cannot verify local pool free space",
+	"remediation": "Re-run the collector with the required RBAC permissions.",
+}] if {
+	collector_present
+	not pxctl_present
+}
+
+local_pool_findings := [] if { not collector_present }
+local_pool_findings := [] if {
+	pxctl_present
+	count(px_pxctl.nodes) == 0
+}
+
+# ---------------------------------------------------------------------------
+# Check 17: storev2 nodes have a metadata device of at least 64 GiB
+#
+# Portworx storev2 (StorageVol == /var/.px) requires a dedicated metadata
+# device. The recommended minimum size is 64 GiB. An undersized metadata
+# device causes metadata I/O saturation under heavy VM workloads.
+# ---------------------------------------------------------------------------
+
+_64_gib := 68719476736
+
+storev2_in_use if {
+	px_pxctl.storev2 == true
+}
+
+# Nodes where metadataDeviceSizeBytes < 64 GiB (includes absent metadata device).
+storev2_metadata_violations := [msg |
+	some n in px_pxctl.nodes
+	n.metadataDeviceSizeBytes < _64_gib
+	msg := sprintf("%s (metadata device: %v bytes, need >= %v bytes)",
+		[n.name, n.metadataDeviceSizeBytes, _64_gib])
+]
+
+storev2_metadata_findings := [{
+	"checkId":    "prod-px-kubevirt-storev2-metadata",
+	"title":      "Portworx storev2 Metadata Device Size",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.storev2_metadata.ok",
+	"message":    sprintf("storev2 in use; all %d node(s) have metadata device >= 64 GiB", [count(px_pxctl.nodes)]),
+}] if {
+	pxctl_present
+	storev2_in_use
+	count(storev2_metadata_violations) == 0
+}
+
+storev2_metadata_findings := [{
+	"checkId":     "prod-px-kubevirt-storev2-metadata",
+	"title":       "Portworx storev2 Metadata Device Size",
+	"category":    "production-readiness",
+	"severity":    "error",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.storev2_metadata.undersized",
+	"message":     sprintf("%d node(s) have metadata device below 64 GiB: %v", [count(storev2_metadata_violations), storev2_metadata_violations]),
+	"evidence":    {"violating": sprintf("%v", [storev2_metadata_violations])},
+	"remediation": "Resize or replace the metadata device on the affected nodes to at least 64 GiB. See 'pxctl service drive add' documentation.",
+}] if {
+	pxctl_present
+	storev2_in_use
+	count(storev2_metadata_violations) > 0
+}
+
+storev2_metadata_findings := [{
+	"checkId":    "prod-px-kubevirt-storev2-metadata",
+	"title":      "Portworx storev2 Metadata Device Size",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.storev2_metadata.not_applicable",
+	"message":    "storev2 not detected; metadata device size check not applicable",
+}] if {
+	pxctl_present
+	not storev2_in_use
+}
+
+storev2_metadata_findings := [{
+	"checkId":     "prod-px-kubevirt-storev2-metadata",
+	"title":       "Portworx storev2 Metadata Device Size",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.storev2_metadata.unavailable",
+	"message":     "pxctl status data unavailable; cannot verify storev2 metadata device size",
+	"remediation": "Re-run the collector with the required RBAC permissions.",
+}] if {
+	collector_present
+	not pxctl_present
+}
+
+storev2_metadata_findings := [] if { not collector_present }
+
+# ---------------------------------------------------------------------------
+# Check 18: All storage nodes are online with storage status Up
+# ---------------------------------------------------------------------------
+
+# node.status == 2 means the node is online in the Portworx gossip protocol.
+node_not_ok(n) if { n.status != 2 }
+node_not_ok(n) if { n.storageStatus != "Up" }
+
+nodes_not_ok_msgs := [msg |
+	some n in px_pxctl.nodes
+	node_not_ok(n)
+	msg := sprintf("%s (nodeStatus=%v, storageStatus=%v)", [n.name, n.status, n.storageStatus])
+]
+
+node_health_findings := [{
+	"checkId":    "prod-px-kubevirt-node-health",
+	"title":      "Portworx Storage Node Health",
+	"category":   "production-readiness",
+	"severity":   "info",
+	"pass":        true,
+	"reasonCode": "prod.px.kubevirt.node_health.ok",
+	"message":    sprintf("all %d storage node(s) are online with storage status Up", [count(px_pxctl.nodes)]),
+}] if {
+	pxctl_present
+	count(px_pxctl.nodes) > 0
+	count(nodes_not_ok_msgs) == 0
+}
+
+node_health_findings := [{
+	"checkId":     "prod-px-kubevirt-node-health",
+	"title":       "Portworx Storage Node Health",
+	"category":    "production-readiness",
+	"severity":    "error",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.node_health.degraded",
+	"message":     sprintf("%d storage node(s) not online or storage not Up: %v", [count(nodes_not_ok_msgs), nodes_not_ok_msgs]),
+	"evidence":    {"violating": sprintf("%v", [nodes_not_ok_msgs])},
+	"remediation": "Investigate the affected nodes with 'pxctl status' and 'pxctl service diags'. Ensure all storage nodes are reachable and quorum is met.",
+}] if {
+	pxctl_present
+	count(nodes_not_ok_msgs) > 0
+}
+
+node_health_findings := [{
+	"checkId":     "prod-px-kubevirt-node-health",
+	"title":       "Portworx Storage Node Health",
+	"category":    "production-readiness",
+	"severity":    "warning",
+	"pass":         false,
+	"reasonCode":  "prod.px.kubevirt.node_health.unavailable",
+	"message":     "pxctl status data unavailable; cannot verify storage node health",
+	"remediation": "Re-run the collector with the required RBAC permissions.",
+}] if {
+	collector_present
+	not pxctl_present
+}
+
+node_health_findings := [] if { not collector_present }
+node_health_findings := [] if {
+	pxctl_present
+	count(px_pxctl.nodes) == 0
+}
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -825,24 +1256,42 @@ cluster_findings := array.concat(
 							array.concat(
 								array.concat(
 									array.concat(
-										array.concat(collector_findings, sc_exists_findings),
-										repl_findings,
+										array.concat(
+											array.concat(
+												array.concat(
+													array.concat(
+														array.concat(
+															array.concat(
+																       array.concat(collector_findings, sc_exists_findings),
+																       repl_findings,
+															),
+															binding_findings,
+														),
+														expansion_findings,
+													),
+													nodiscard_findings,
+												),
+												storageprofile_findings,
+											),
+											pvc_rwx_findings,
+										),
+										pvc_block_findings,
 									),
-									binding_findings,
+									px_version_findings,
 								),
-								expansion_findings,
+								operator_version_findings,
 							),
-							nodiscard_findings,
+							stork_version_findings,
 						),
-						storageprofile_findings,
+						cluster_status_findings,
 					),
-					pvc_rwx_findings,
+					license_findings,
 				),
-				pvc_block_findings,
+				global_pool_findings,
 			),
-			px_version_findings,
+			local_pool_findings,
 		),
-		operator_version_findings,
+		storev2_metadata_findings,
 	),
-	stork_version_findings,
+	node_health_findings,
 )

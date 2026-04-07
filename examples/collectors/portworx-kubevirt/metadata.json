@@ -37,6 +37,16 @@
             "apiGroups": ["cdi.kubevirt.io"],
             "resources": ["storageprofiles"],
             "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["pods"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["pods/exec"],
+            "verbs": ["create"]
           }
         ]
       }

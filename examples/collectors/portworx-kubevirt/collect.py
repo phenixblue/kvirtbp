@@ -51,7 +51,8 @@ def _ws_exec(ns, pod_name, cmd):
     """
     qs = '&'.join(
         ['command=' + _up.quote(c) for c in cmd] +
-        ['stdout=true', 'stderr=true', 'stdin=false', 'tty=false']
+        ['stdout=true', 'stderr=true', 'stdin=false', 'tty=false',
+         'container=portworx']
     )
     path = '/api/v1/namespaces/{}/pods/{}/exec?{}'.format(ns, pod_name, qs)
     ws_key = base64.b64encode(os.urandom(16)).decode()
@@ -273,6 +274,12 @@ if _px_ns and _px_pod:
     # Use stdout if it has content, else fall back to stderr —
     # some pxctl versions write the JSON blob to stderr instead of stdout.
     _raw = _raw_out or _raw_err
+    # Diagnostic context always stored so failures are self-describing.
+    _exec_ctx = 'pod={}/{} stdout_bytes={} stderr_bytes={}{}'.format(
+        _px_ns, _px_pod,
+        len(_raw_out), len(_raw_err),
+        ('; diag: ' + _exec_diag) if _exec_diag else '',
+    )
     if _raw:
         try:
             _d = json.loads(_raw)
@@ -305,12 +312,16 @@ if _px_ns and _px_pod:
                 'nodes':                _nodes,
             }
         except Exception as _exc:
-            pxctl_status = {'_error': 'parse_failed: ' + str(_exc)}
+            pxctl_status = {'_error': 'parse_failed: {} [{}]'.format(_exc, _exec_ctx),
+                            '_raw_head': (_raw[:200]).decode(errors='replace')}
     else:
-        pxctl_status = {'_error': 'exec_failed: no output on stdout or stderr from pxctl status --json'
-                        + ('; diag: ' + _exec_diag if _exec_diag else '')}
+        pxctl_status = {'_error': 'exec_failed: no output on stdout or stderr [{}]'.format(_exec_ctx)}
 else:
-    pxctl_status = {'_error': 'pod_not_found: no running portworx pod found in kube-system or portworx namespace'}
+    # Show every namespace/label combination tried for easier debugging.
+    _tried = [(ns, sel)
+              for ns in ('kube-system', 'portworx', 'px', 'openshift-storage', 'portworx-operator')
+              for sel in ('name=portworx', 'app=portworx', 'name=portworx-nss')]
+    pxctl_status = {'_error': 'pod_not_found: no running portworx pod found; searched: {}'.format(_tried)}
 
 # ── Output ─────────────────────────────────────────────────────────────────────
 import os as _os

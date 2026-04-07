@@ -46,7 +46,7 @@
           {
             "apiGroups": [""],
             "resources": ["pods/exec"],
-            "verbs": ["create"]
+            "verbs": ["get", "create"]
           }
         ]
       }

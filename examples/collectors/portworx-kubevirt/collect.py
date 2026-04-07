@@ -26,7 +26,7 @@ See rbac.yaml — ClusterRole needs get/list on:
   storageprofiles (cdi.kubevirt.io/v1beta1)
 """
 
-import base64, json, os, re as _re, socket, ssl, struct, urllib.parse as _up, urllib.request as u
+import base64, http.client as _hc, json, os, re as _re, socket, ssl, struct, urllib.parse as _up, urllib.request as u
 
 SAR = '/var/run/secrets/kubernetes.io/serviceaccount'
 tok = open(SAR + '/token').read().strip()
@@ -39,133 +39,131 @@ ctx = ssl.create_default_context(cafile=SAR + '/ca.crt')
 def _ws_exec(ns, pod_name, cmd):
     """Run cmd in pod_name via K8s WebSocket exec API.
 
-    Returns (stdout_bytes, stderr_bytes).  Captures both streams so that
-    callers can fall back to stderr when the command writes JSON there
-    (observed on some pxctl versions).
+    Returns (stdout_bytes, stderr_bytes, diag_str).
 
-    Key design decisions:
-      - Does NOT early-return on channel-3 (K8s process-exit status): that
-        message can arrive before the last stdout/stderr frames are flushed,
-        so we keep draining until the WebSocket close frame (opcode 8) or the
-        TCP connection drops.
-      - Uses a 64 KiB recv buffer so large outputs (pxctl status is ~56 KiB)
-        fit in as few recv calls as possible.
+    Uses http.client for the HTTP upgrade so that any bytes the HTTP parser
+    buffered during header reading are correctly available via resp.fp.read1()
+    rather than being silently lost if we switched to raw sock.recv().
+
+    Both stdout (ch 1) and stderr (ch 2) are accumulated; callers can use
+    whichever is non-empty. Process-exit status (ch 3) is ignored; we keep
+    reading until the WebSocket close frame (opcode 8) or EOF.
     """
     qs = '&'.join(
         ['command=' + _up.quote(c) for c in cmd] +
         ['stdout=true', 'stderr=true', 'stdin=false', 'tty=false']
     )
     path = '/api/v1/namespaces/{}/pods/{}/exec?{}'.format(ns, pod_name, qs)
-    ctx2 = ssl.create_default_context(cafile=SAR + '/ca.crt')
-    try:
-        sock = ctx2.wrap_socket(
-            socket.create_connection((h, int(p)), timeout=30),
-            server_hostname=h,
-        )
-    except Exception:
-        return b'', b''
-    sock.settimeout(90)
+    ws_key = base64.b64encode(os.urandom(16)).decode()
     stdout = b''
     stderr = b''
+    diag = ''
+    conn = None
     try:
-        ws_key = base64.b64encode(os.urandom(16)).decode()
-        req = (
-            'GET {path} HTTP/1.1\r\n'
-            'Host: {h}:{p}\r\n'
-            'Authorization: Bearer {tok}\r\n'
-            'Upgrade: websocket\r\n'
-            'Connection: Upgrade\r\n'
-            'Sec-WebSocket-Key: {key}\r\n'
-            'Sec-WebSocket-Version: 13\r\n'
-            'Sec-WebSocket-Protocol: channel.k8s.io\r\n'
-            '\r\n'
-        ).format(path=path, h=h, p=p, tok=tok, key=ws_key).encode()
-        sock.sendall(req)
+        ctx2 = ssl.create_default_context(cafile=SAR + '/ca.crt')
+        conn = _hc.HTTPSConnection(h, int(p), context=ctx2, timeout=30)
+        conn.connect()
+        conn.request('GET', path, headers={
+            'Authorization': 'Bearer ' + tok,
+            'Connection':    'Upgrade',
+            'Upgrade':       'websocket',
+            'Sec-WebSocket-Key':      ws_key,
+            'Sec-WebSocket-Version':  '13',
+            # Offer both protocol variants so clusters that only support one
+            # variant will still agree on a subprotocol.
+            'Sec-WebSocket-Protocol': 'channel.k8s.io, v4.channel.k8s.io',
+        })
+        resp = conn.getresponse()
+        if resp.status != 101:
+            body = resp.read(256)
+            diag = 'upgrade_rejected: HTTP {} {}: {}'.format(
+                resp.status, resp.reason,
+                body.decode(errors='replace').strip()[:150])
+            return b'', b'', diag
+
+        # 101 Switching Protocols — WebSocket is active.
+        # CRITICAL: read frames via resp.fp (an io.BufferedReader backed by
+        # the SSL socket) rather than conn.sock.recv(). http.client may have
+        # read ahead during header parsing; those bytes live in resp.fp's
+        # internal buffer and would be silently lost by raw sock.recv().
+        conn.sock.settimeout(90)
+        fp = resp.fp
+
         buf = b''
-        while b'\r\n\r\n' not in buf:
-            chunk = sock.recv(65536)
-            if not chunk:
-                return b'', b''
-            buf += chunk
-        head, buf = buf.split(b'\r\n\r\n', 1)
-        if b' 101 ' not in head.split(b'\r\n')[0]:
-            return b'', b''
-        while True:
-            # Read at least 2 bytes for the WebSocket frame header.
-            while len(buf) < 2:
+
+        def _fill(n):
+            nonlocal buf
+            while len(buf) < n:
                 try:
-                    c = sock.recv(65536)
+                    chunk = fp.read1(65536)
                 except Exception:
-                    return stdout, stderr
-                if not c:
-                    return stdout, stderr
-                buf += c
+                    chunk = b''
+                if not chunk:
+                    break
+                buf += chunk
+
+        while True:
+            _fill(2)
+            if len(buf) < 2:
+                break
             opcode = buf[0] & 0x0f
-            if opcode == 8:   # WebSocket close frame — connection done
-                return stdout, stderr
+            if opcode == 8:          # WebSocket close frame
+                break
             plen = buf[1] & 0x7f
             hlen = 2
             if plen == 126:
-                while len(buf) < 4:
-                    try:
-                        c = sock.recv(65536)
-                    except Exception:
-                        return stdout, stderr
-                    if not c:
-                        return stdout, stderr
-                    buf += c
+                _fill(4)
+                if len(buf) < 4:
+                    break
                 plen = struct.unpack('>H', buf[2:4])[0]
                 hlen = 4
             elif plen == 127:
-                while len(buf) < 10:
-                    try:
-                        c = sock.recv(65536)
-                    except Exception:
-                        return stdout, stderr
-                    if not c:
-                        return stdout, stderr
-                    buf += c
+                _fill(10)
+                if len(buf) < 10:
+                    break
                 plen = struct.unpack('>Q', buf[2:10])[0]
                 hlen = 10
             total_frame = hlen + plen
-            while len(buf) < total_frame:
-                try:
-                    c = sock.recv(65536)
-                except Exception:
-                    return stdout, stderr
-                if not c:
-                    return stdout, stderr
-                buf += c
+            _fill(total_frame)
+            if len(buf) < total_frame:
+                break
             payload = buf[hlen:total_frame]
             buf = buf[total_frame:]
-            # K8s channel byte: 1=stdout, 2=stderr, 3=process-exit-status.
-            # opcode 0=continuation, 1=text, 2=binary — all carry K8s channel data.
+            # K8s channels: 1=stdout, 2=stderr, 3=process-exit-status
             if payload and opcode in (0x0, 0x1, 0x2):
                 ch = payload[0]
                 if ch == 1:
                     stdout += payload[1:]
                 elif ch == 2:
                     stderr += payload[1:]
-                # ch==3 is the exit-status JSON; we ignore it and keep looping
-                # until the actual WebSocket close frame arrives.
-    except Exception:
-        return stdout, stderr
+                # ch==3: exit-status message — keep looping until close frame
+    except Exception as exc:
+        diag = 'exc: {}'.format(exc)
     finally:
         try:
-            sock.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
+    return stdout, stderr, diag
 
 
 def _find_px_pod():
-    """Return (namespace, pod_name) of a running portworx pod, or (None, None)."""
-    for ns in ('kube-system', 'portworx'):
-        for sel in ('name=portworx', 'app=portworx'):
+    """Return (namespace, pod_name) of a running portworx storage pod, or (None, None)."""
+    # Search order: most common namespaces first. Skip portworx-api pods since
+    # those don't have the pxctl binary or full cluster visibility.
+    for ns in ('kube-system', 'portworx', 'px', 'openshift-storage', 'portworx-operator'):
+        for sel in ('name=portworx', 'app=portworx', 'name=portworx-nss'):
             resp = get('/api/v1/namespaces/{}/pods?labelSelector={}'.format(
                 ns, _up.quote(sel)))
             for pod in resp.get('items', []):
-                if pod.get('status', {}).get('phase') == 'Running':
-                    return ns, pod['metadata']['name']
+                if pod.get('status', {}).get('phase') != 'Running':
+                    continue
+                # Skip the portworx-api helper pods — they don't have pxctl
+                name = pod['metadata']['name']
+                if 'api' in name and 'portworx' in name and not name.startswith('portworx-') or name.endswith('-api'):
+                    continue
+                return ns, name
     return None, None
 
 
@@ -271,9 +269,9 @@ pvcs = [
 pxctl_status = {}
 _px_ns, _px_pod = _find_px_pod()
 if _px_ns and _px_pod:
-    _raw_out, _raw_err = _ws_exec(_px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'])
-    # Use stdout if it has content, else fall back to stderr — some pxctl
-    # versions write the JSON blob to stderr instead of stdout.
+    _raw_out, _raw_err, _exec_diag = _ws_exec(_px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'])
+    # Use stdout if it has content, else fall back to stderr —
+    # some pxctl versions write the JSON blob to stderr instead of stdout.
     _raw = _raw_out or _raw_err
     if _raw:
         try:
@@ -309,7 +307,8 @@ if _px_ns and _px_pod:
         except Exception as _exc:
             pxctl_status = {'_error': 'parse_failed: ' + str(_exc)}
     else:
-        pxctl_status = {'_error': 'exec_failed: no output on stdout or stderr from pxctl status --json'}
+        pxctl_status = {'_error': 'exec_failed: no output on stdout or stderr from pxctl status --json'
+                        + ('; diag: ' + _exec_diag if _exec_diag else '')}
 else:
     pxctl_status = {'_error': 'pod_not_found: no running portworx pod found in kube-system or portworx namespace'}
 

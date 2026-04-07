@@ -26,7 +26,7 @@ See rbac.yaml — ClusterRole needs get/list on:
   storageprofiles (cdi.kubevirt.io/v1beta1)
 """
 
-import base64, http.client as _hc, json, os, re as _re, socket, ssl, struct, urllib.parse as _up, urllib.request as u
+import base64, http.client as _hc, json, os, re as _re, socket, ssl, struct, sys, urllib.parse as _up, urllib.request as u
 
 SAR = '/var/run/secrets/kubernetes.io/serviceaccount'
 tok = open(SAR + '/token').read().strip()
@@ -36,7 +36,7 @@ BASE = 'https://' + h + ':' + p
 ctx = ssl.create_default_context(cafile=SAR + '/ca.crt')
 
 
-def _ws_exec(ns, pod_name, cmd):
+def _ws_exec(ns, pod_name, cmd, container):
     """Run cmd in pod_name via K8s WebSocket exec API.
 
     Returns (stdout_bytes, stderr_bytes, diag_str).
@@ -52,7 +52,7 @@ def _ws_exec(ns, pod_name, cmd):
     qs = '&'.join(
         ['command=' + _up.quote(c) for c in cmd] +
         ['stdout=true', 'stderr=true', 'stdin=false', 'tty=false',
-         'container=portworx']
+         'container=' + _up.quote(container)]
     )
     path = '/api/v1/namespaces/{}/pods/{}/exec?{}'.format(ns, pod_name, qs)
     ws_key = base64.b64encode(os.urandom(16)).decode()
@@ -150,7 +150,12 @@ def _ws_exec(ns, pod_name, cmd):
 
 
 def _find_px_pod():
-    """Return (namespace, pod_name) of a running portworx storage pod, or (None, None)."""
+    """Return (namespace, pod_name, container_name) for a running portworx storage pod.
+
+    Container name is detected from the pod spec so that installs that name the
+    main container 'portworx-enterprise' or similar are handled correctly.
+    Returns (None, None, None) when no matching pod is found.
+    """
     # Search order: most common namespaces first. Skip portworx-api pods since
     # those don't have the pxctl binary or full cluster visibility.
     for ns in ('kube-system', 'portworx', 'px', 'openshift-storage', 'portworx-operator'):
@@ -162,10 +167,22 @@ def _find_px_pod():
                     continue
                 # Skip the portworx-api helper pods — they don't have pxctl
                 name = pod['metadata']['name']
-                if 'api' in name and 'portworx' in name and not name.startswith('portworx-') or name.endswith('-api'):
+                if name.endswith('-api'):
                     continue
-                return ns, name
-    return None, None
+                # Pick the portworx storage container (not sidecars / api proxies).
+                # Prefer a container whose name contains 'portworx' but not 'api'
+                # or 'proxy'; fall back to the first container if none match.
+                containers = [c['name']
+                              for c in pod.get('spec', {}).get('containers', [])]
+                px_containers = [c for c in containers
+                                 if 'portworx' in c
+                                 and 'api' not in c
+                                 and 'proxy' not in c]
+                container = (px_containers or containers or ['portworx'])[0]
+                print('[pxctl] found pod {}/{} container={} sel={}'.format(
+                      ns, name, container, sel), file=sys.stderr)
+                return ns, name, container
+    return None, None, None
 
 
 def _license_days(lic_str):
@@ -268,18 +285,22 @@ pvcs = [
 
 # ── pxctl status ───────────────────────────────────────────────────────────────
 pxctl_status = {}
-_px_ns, _px_pod = _find_px_pod()
+_px_ns, _px_pod, _px_container = _find_px_pod()
 if _px_ns and _px_pod:
-    _raw_out, _raw_err, _exec_diag = _ws_exec(_px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'])
+    print('[pxctl] exec pod={}/{} container={}'.format(_px_ns, _px_pod, _px_container),
+          file=sys.stderr)
+    _raw_out, _raw_err, _exec_diag = _ws_exec(
+        _px_ns, _px_pod, ['/opt/pwx/bin/pxctl', 'status', '--json'], _px_container)
     # Use stdout if it has content, else fall back to stderr —
     # some pxctl versions write the JSON blob to stderr instead of stdout.
     _raw = _raw_out or _raw_err
     # Diagnostic context always stored so failures are self-describing.
-    _exec_ctx = 'pod={}/{} stdout_bytes={} stderr_bytes={}{}'.format(
-        _px_ns, _px_pod,
+    _exec_ctx = 'pod={}/{} container={} stdout_bytes={} stderr_bytes={}{}'.format(
+        _px_ns, _px_pod, _px_container,
         len(_raw_out), len(_raw_err),
         ('; diag: ' + _exec_diag) if _exec_diag else '',
     )
+    print('[pxctl] exec result: {}'.format(_exec_ctx), file=sys.stderr)
     if _raw:
         try:
             _d = json.loads(_raw)
@@ -311,16 +332,23 @@ if _px_ns and _px_pod:
                 'globalUsedBytes':      sum(_pl['used']      for _nd in _nodes for _pl in _nd['pools']),
                 'nodes':                _nodes,
             }
+            print('[pxctl] parsed ok clusterStatus={} nodes={}'.format(
+                  pxctl_status['clusterStatus'], len(_nodes)), file=sys.stderr)
         except Exception as _exc:
+            print('[pxctl] parse_failed: {}'.format(_exc), file=sys.stderr)
             pxctl_status = {'_error': 'parse_failed: {} [{}]'.format(_exc, _exec_ctx),
                             '_raw_head': (_raw[:200]).decode(errors='replace')}
     else:
+        print('[pxctl] exec_failed: no output ({}b stdout, {}b stderr){}'.format(
+              len(_raw_out), len(_raw_err),
+              (' diag=' + _exec_diag) if _exec_diag else ''), file=sys.stderr)
         pxctl_status = {'_error': 'exec_failed: no output on stdout or stderr [{}]'.format(_exec_ctx)}
 else:
     # Show every namespace/label combination tried for easier debugging.
     _tried = [(ns, sel)
               for ns in ('kube-system', 'portworx', 'px', 'openshift-storage', 'portworx-operator')
               for sel in ('name=portworx', 'app=portworx', 'name=portworx-nss')]
+    print('[pxctl] pod_not_found searched={}'.format(_tried), file=sys.stderr)
     pxctl_status = {'_error': 'pod_not_found: no running portworx pod found; searched: {}'.format(_tried)}
 
 # ── Output ─────────────────────────────────────────────────────────────────────

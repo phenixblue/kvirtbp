@@ -89,7 +89,7 @@ func TestMergeCollectorConfigs_PartialOverlap(t *testing.T) {
 func TestResolvedOutputPath_Default(t *testing.T) {
 	cfg := collector.CollectorConfig{}
 	got := cfg.ResolvedOutputPath()
-	want := "/kvirtbp/output.json"
+	want := "/tmp/kvirtbp/output.json"
 	if got != want {
 		t.Fatalf("want %q, got %q", want, got)
 	}

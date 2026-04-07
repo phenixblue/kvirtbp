@@ -16,7 +16,7 @@ const (
 // defaultOutputPath is the path inside the collector pod container where
 // commands write their output. The CLI appends "cat <outputPath>" as the
 // final container command so pod logs contain only the clean JSON payload.
-const defaultOutputPath = "/kvirtbp/output.json"
+const defaultOutputPath = "/tmp/kvirtbp/output.json"
 
 // CollectorConfig declares a custom pod collector, either in a bundle's
 // metadata.json or in a standalone --collector-config file.
@@ -39,7 +39,7 @@ type CollectorConfig struct {
 	Scope CollectorScope `json:"scope"`
 
 	// OutputPath is the in-pod file path where commands write JSON output.
-	// Defaults to /kvirtbp/output.json.
+	// Defaults to /tmp/kvirtbp/output.json.
 	OutputPath string `json:"outputPath,omitempty"`
 
 	// TimeoutSeconds is the per-collector deadline in seconds. 0 means use

@@ -57,7 +57,7 @@ Collectors are declared as JSON objects. The schema maps to `collector.Collector
 | `image` | string | yes | Container image to run |
 | `commands` | []string | yes | Shell commands to execute inside the container |
 | `scope` | string | no | `"once"` (default) or `"per-node"` |
-| `outputPath` | string | no | In-pod path where commands write JSON output (default: `/kvirtbp/output.json`) |
+| `outputPath` | string | no | In-pod path where commands write JSON output (default: `/tmp/kvirtbp/output.json`) |
 | `timeoutSeconds` | int | no | Per-collector deadline in seconds; `0` means use the global `--collector-timeout` cap |
 | `privileged` | bool | no | Run container with `SecurityContext.Privileged = true` |
 | `hostPID` | bool | no | Mount host PID namespace |
@@ -122,7 +122,7 @@ If a collector (or individual node) fails, an `_error` key is stored in place of
 
 ## Writing collector output
 
-Commands must write valid JSON to `outputPath` (default `/kvirtbp/output.json`). The CLI appends `cat <outputPath>` as the last command in the Job spec — this is what appears as pod logs and is parsed as JSON.
+Commands must write valid JSON to `outputPath` (default `/tmp/kvirtbp/output.json`). The CLI appends `cat <outputPath>` as the last command in the Job spec — this is what appears as pod logs and is parsed as JSON.
 
 Intermediate commands may freely write to stdout/stderr without corrupting the output payload since they run before the final `cat`.
 
@@ -131,14 +131,14 @@ Example pattern for a sysctl collector:
 ```bash
 # write JSON to the output path, then let the CLI's appended "cat" emit it
 commands:
-  - "sysctl -a --pattern '^(net\\.ipv4\\.ip_forward|net\\.bridge\\.bridge-nf-call-iptables)' | awk 'BEGIN{printf \"{\"} {printf \"%s\\\"%s\\\": \\\"%s\\\"%s\", NR>1?\",\":\" \", $1, $3} END{print \"}\"}' > /kvirtbp/output.json"
+  - "sysctl -a --pattern '^(net\\.ipv4\\.ip_forward|net\\.bridge\\.bridge-nf-call-iptables)' | awk 'BEGIN{printf \"{\"} {printf \"%s\\\"%s\\\": \\\"%s\\\"%s\", NR>1?\",\":\" \", $1, $3} END{print \"}\"}' > /tmp/kvirtbp/output.json"
 ```
 
 Or with a helper image that already produces JSON:
 
 ```bash
 commands:
-  - "my-tool dump-json > /kvirtbp/output.json"
+  - "my-tool dump-json > /tmp/kvirtbp/output.json"
 ```
 
 ## Declaring collectors in a bundle
@@ -156,7 +156,7 @@ Add a `collectors` array to the bundle's `metadata.json`:
       "image": "alpine:3.21",
       "commands": [
         "apk add -q procps",
-        "sysctl -a --pattern '^net\\.ipv4\\.ip_forward' | awk 'BEGIN{printf \"{\"}{printf \"\\\"%s\\\":\\\"%s\\\"\", $1,$3}END{print \"}\"}' > /kvirtbp/output.json"
+        "sysctl -a --pattern '^net\\.ipv4\\.ip_forward' | awk 'BEGIN{printf \"{\"}{printf \"\\\"%s\\\":\\\"%s\\\"\", $1,$3}END{print \"}\"}' > /tmp/kvirtbp/output.json"
       ],
       "scope": "per-node",
       "privileged": true,

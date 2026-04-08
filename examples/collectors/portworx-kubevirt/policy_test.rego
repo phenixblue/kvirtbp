@@ -1115,15 +1115,12 @@ test_ocp_version_too_old_fail if {
 	fs[0].reasonCode == "prod.px.kubevirt.ocp_version.too_old"
 }
 
-# OCP version unknown (empty string) → warning.
-test_ocp_version_unknown_warning if {
+# OCP version empty (non-OCP cluster or CRD unavailable) → check skipped.
+test_ocp_version_not_ocp_skip if {
 	inp := _components_only({"ocpVersion": "", "osvVersion": "", "mtvVersion": "", "virtV2VVersion": "", "pxBackupVersion": ""})
 	findings := data.kvirtbp.cluster_findings with input as inp
 	fs := [f | f := findings[_]; f.checkId == "prod-px-kubevirt-ocp-version"]
-	count(fs) == 1
-	fs[0].pass == false
-	fs[0].severity == "warning"
-	fs[0].reasonCode == "prod.px.kubevirt.ocp_version.unknown"
+	count(fs) == 0
 }
 
 # No collector data → OCP check skipped.

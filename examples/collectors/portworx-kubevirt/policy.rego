@@ -1389,16 +1389,8 @@ ocp_version_findings := [{
 	not version_gte(v, ocp_min_version)
 }
 
-ocp_version_findings := [{
-	"checkId":     "prod-px-kubevirt-ocp-version",
-	"title":       "OpenShift Container Platform Minimum Version",
-	"category":    "production-readiness",
-	"severity":    "warning",
-	"pass":         false,
-	"reasonCode":  "prod.px.kubevirt.ocp_version.unknown",
-	"message":     "OCP version could not be determined; ClusterVersion CRD may be unavailable",
-	"remediation": "Ensure the collector has get access to config.openshift.io/clusterversions.",
-}] if {
+# Not OpenShift or ClusterVersion CRD unavailable — skip this check.
+ocp_version_findings := [] if {
 	collector_present
 	object.get(px_components, "ocpVersion", "") == ""
 }

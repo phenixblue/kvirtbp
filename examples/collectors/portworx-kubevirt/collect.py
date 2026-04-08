@@ -350,9 +350,9 @@ _hco_list = get('/apis/hco.kubevirt.io/v1beta1/namespaces/openshift-cnv/hypercon
 _hco_items = _hco_list.get('items', [])
 if _hco_items:
     _hco_versions = _hco_items[0].get('status', {}).get('versions', [])
-    _kubevirt_entry = next(
-        (v for v in _hco_versions if v.get('name') == 'kubevirt'), None)
-    component_versions['osvVersion'] = (_kubevirt_entry or {}).get('version', '')
+    _osv_entry = next(
+        (v for v in _hco_versions if v.get('name') == 'operator'), None)
+    component_versions['osvVersion'] = (_osv_entry or {}).get('version', '')
 else:
     component_versions['osvVersion'] = ''
 print('[components] osvVersion={}'.format(component_versions['osvVersion']), file=sys.stderr)

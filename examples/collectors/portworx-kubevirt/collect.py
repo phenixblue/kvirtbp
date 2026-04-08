@@ -308,7 +308,7 @@ virtual_machines = []
 _vm_list = get('/apis/kubevirt.io/v1/virtualmachines')
 for _vm in _vm_list.get('items', []):
     _vm_disks = []
-    for _d in _vm.get('spec', {}).get('domain', {}).get('devices', {}).get('disks', []):
+    for _d in _vm.get('spec', {}).get('template', {}).get('spec', {}).get('domain', {}).get('devices', {}).get('disks', []):
         _bs = _d.get('blockSize', {}).get('custom', {})
         _vm_disks.append({
             'name':              _d.get('name', ''),

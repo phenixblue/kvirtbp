@@ -37,7 +37,7 @@ func (e *ExitCodeError) Error() string {
 	return fmt.Sprintf("scan failed with exit code %d", e.Code)
 }
 
-func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string) *cobra.Command {
+func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string, cfgFile *string) *cobra.Command {
 	var includeChecks []string
 	var excludeChecks []string
 	var categories []string
@@ -64,7 +64,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 		Short: "Run best-practice checks",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := time.Now()
-			cfg, err := loadConfigWithOverride(*outputFlag)
+			cfg, err := loadConfigWithOverride(*outputFlag, *cfgFile)
 			if err != nil {
 				return err
 			}
@@ -117,6 +117,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 
 			parsedInclude, parsedExclude := checks.ParseCheckFlags(includeChecks)
 			parsedExclude = append(parsedExclude, excludeChecks...)
+			parsedExclude = append(parsedExclude, cfg.ExcludeChecks...)
 
 			filter := checks.Filter{
 				IncludeIDs: parsedInclude,

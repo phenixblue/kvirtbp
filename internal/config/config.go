@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Output        string
 	Timeout       time.Duration
+	Engine        string
 	ExcludeChecks []string
 }
 
@@ -24,6 +25,9 @@ output: table
 
 # Scan timeout (e.g. 30s, 2m)
 timeout: 30s
+
+# Evaluator engine: go|rego
+engine: go
 
 # Check IDs to exclude from every scan (can also be passed via --exclude-check)
 exclude_checks: []
@@ -67,6 +71,7 @@ func Load(path string) (Config, error) {
 
 	v.SetDefault("output", "table")
 	v.SetDefault("timeout", "30s")
+	v.SetDefault("engine", "go")
 	v.SetDefault("exclude_checks", []string{})
 
 	if path != "" {
@@ -97,6 +102,7 @@ func Load(path string) (Config, error) {
 	return Config{
 		Output:        v.GetString("output"),
 		Timeout:       timeout,
+		Engine:        v.GetString("engine"),
 		ExcludeChecks: v.GetStringSlice("exclude_checks"),
 	}, nil
 }

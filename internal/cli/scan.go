@@ -129,6 +129,11 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string,
 			ctx, cancel := context.WithTimeout(cmd.Context(), cfg.Timeout)
 			defer cancel()
 
+			// --engine flag takes precedence; fall back to config file value.
+			if !cmd.Flags().Changed("engine") && cfg.Engine != "" {
+				engineName = cfg.Engine
+			}
+
 			evaluator, err := getEvaluator(engineName)
 			if err != nil {
 				return err
@@ -292,7 +297,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string,
 	cmd.Flags().StringSliceVar(&severities, "severity", nil, "Include only specific severities: info|warning|error")
 	cmd.Flags().StringSliceVar(&includeNamespaces, "namespace", nil, "Limit namespace-scoped coverage checks to matching namespaces (supports glob patterns like tenant-*)")
 	cmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespace", nil, "Exclude matching namespaces from namespace-scoped coverage checks (supports glob patterns)")
-	cmd.Flags().StringVar(&engineName, "engine", "go", "Evaluator engine: go|rego")
+	cmd.Flags().StringVar(&engineName, "engine", "", "Evaluator engine: go|rego (default: go, or value from config file)")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "Path to Rego policy file (used with --engine rego)")
 	cmd.Flags().StringVar(&policyBundle, "policy-bundle", "", "Path or HTTPS URL to a Rego policy bundle directory or .tar.gz archive (used with --engine rego)")
 	cmd.Flags().StringVar(&bundleSubdir, "bundle-subdir", "", "Subdirectory within the bundle archive that contains metadata.json (for monorepo layouts)")

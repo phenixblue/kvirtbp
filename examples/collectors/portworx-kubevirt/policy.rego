@@ -1288,6 +1288,15 @@ vm_disk_blocksize_violations := [msg |
 		[vm.namespace, vm.name, disk.name, disk.blockSizeLogical, disk.blockSizePhysical])
 ]
 
+# Distinct VM names (namespace/name) that have at least one violating disk.
+_violating_vm_names := {name |
+	some vm in px_vms
+	some disk in vm.disks
+	not disk.isRootDisk
+	not _disk_4k_ok(disk)
+	name := sprintf("%s/%s", [vm.namespace, vm.name])
+}
+
 # All non-root disks across all VMs (used for count in pass message and skip logic).
 _all_data_disks := [disk |
 	some vm in px_vms
@@ -1316,7 +1325,7 @@ vm_disk_blocksize_findings := [{
 	"severity":    "warning",
 	"pass":         false,
 	"reasonCode":  "prod.px.kubevirt.vm_disk_blocksize.not_4k",
-	"message":     sprintf("%d non-root VM disk(s) do not have blockSize logical=4096 physical=4096: %v", [count(vm_disk_blocksize_violations), vm_disk_blocksize_violations]),
+	"message":     sprintf("%d VM(s) have non-root disks without blockSize 4096/4096: %v", [count(_violating_vm_names), sort(_violating_vm_names)]),
 	"evidence":    {"violating": sprintf("%v", [vm_disk_blocksize_violations])},
 	"remediation": "Set blockSize.custom.logical=4096 and blockSize.custom.physical=4096 on non-root VM disks backed by Portworx RWX block volumes. See https://docs.portworx.com/portworx-enterprise/provision-storage/kubevirt-vms/manage-kubevirt-vms-rwx-block/openshift#vm-configuration-guidelines-for-portworx-raw-block-volumes",
 }] if {

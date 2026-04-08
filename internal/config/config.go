@@ -33,7 +33,7 @@ engine: go
 exclude_checks: []
 `
 
-// defaultConfigPath returns $HOME/.config/kvirtbp/config.yaml.
+// defaultConfigPath returns $HOME/.config/kvirtbp/kvirtbp.yaml.
 func defaultConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -80,7 +80,7 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("reading config file %q: %w", path, err)
 		}
 	} else {
-		v.SetConfigName("kvirtbp")
+		v.SetConfigName("config")
 		v.SetConfigType("yaml")
 		v.AddConfigPath(".")
 		if home, err := os.UserHomeDir(); err == nil {

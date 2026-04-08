@@ -2,6 +2,25 @@ package checks
 
 import "testing"
 
+func TestParseCheckFlags(t *testing.T) {
+	inc, exc := ParseCheckFlags([]string{"check-a", "check-b-", "check-c", ""})
+	if len(inc) != 2 || inc[0] != "check-a" || inc[1] != "check-c" {
+		t.Fatalf("unexpected include: %v", inc)
+	}
+	if len(exc) != 1 || exc[0] != "check-b" {
+		t.Fatalf("unexpected exclude: %v", exc)
+	}
+
+	// All excludes, no includes.
+	inc, exc = ParseCheckFlags([]string{"x-", "y-"})
+	if len(inc) != 0 {
+		t.Fatalf("expected empty include, got %v", inc)
+	}
+	if len(exc) != 2 {
+		t.Fatalf("expected 2 excludes, got %v", exc)
+	}
+}
+
 func TestFilterRegistryByCategoryAndSeverity(t *testing.T) {
 	registry := []Check{BaselineControl{meta: Metadata{ID: "prod-baseline-kubevirt-readiness", Title: "Production Baseline", Category: "production-readiness", Severity: SeverityInfo}}}
 

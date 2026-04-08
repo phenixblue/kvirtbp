@@ -115,9 +115,12 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 				return err
 			}
 
+			parsedInclude, parsedExclude := checks.ParseCheckFlags(includeChecks)
+			parsedExclude = append(parsedExclude, excludeChecks...)
+
 			filter := checks.Filter{
-				IncludeIDs: includeChecks,
-				ExcludeIDs: excludeChecks,
+				IncludeIDs: parsedInclude,
+				ExcludeIDs: parsedExclude,
 				Categories: categories,
 				Severities: parsedSeverities,
 			}

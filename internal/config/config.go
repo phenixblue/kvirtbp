@@ -106,4 +106,3 @@ func Load(path string) (Config, error) {
 		ExcludeChecks: v.GetStringSlice("exclude_checks"),
 	}, nil
 }
-

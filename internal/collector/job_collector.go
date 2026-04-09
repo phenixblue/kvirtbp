@@ -56,19 +56,51 @@ func (c *jobCollector) Collect(ctx context.Context, clients *kube.Clients, opts 
 		defer cancel()
 	}
 
+	// If the collector declares RBAC rules, create the ServiceAccount,
+	// ClusterRole, and ClusterRoleBinding before launching Jobs, and clean
+	// them up afterwards (unless SkipCleanup is set).
+	var saName string
+	if c.cfg.RBAC != nil {
+		name, err := ensureCollectorRBAC(ctx, clients, c.cfg.Name, opts.Namespace, *c.cfg.RBAC)
+		if err != nil {
+			return nil, fmt.Errorf("ensure RBAC for collector %q: %w", c.cfg.Name, err)
+		}
+		saName = name
+		if !opts.SkipCleanup {
+			defer cleanupCollectorRBAC(context.Background(), clients, c.cfg.Name, opts.Namespace)
+		}
+	}
+
+	// If the collector declares scripts, create a ConfigMap from their
+	// content and mount it into the Job pod. Clean up afterwards unless
+	// SkipCleanup is set.
+	var cmName string
+	if len(c.cfg.Scripts) > 0 {
+		name, err := ensureScriptConfigMap(ctx, clients, c.cfg.Name, opts.Namespace, c.cfg.Scripts)
+		if err != nil {
+			return nil, fmt.Errorf("ensure script configmap for collector %q: %w", c.cfg.Name, err)
+		}
+		if name != "" {
+			cmName = name
+			if !opts.SkipCleanup {
+				defer cleanupScriptConfigMap(context.Background(), clients, c.cfg.Name, opts.Namespace)
+			}
+		}
+	}
+
 	switch c.cfg.Scope {
 	case ScopePerNode:
-		return c.collectPerNode(ctx, clients, opts)
+		return c.collectPerNode(ctx, clients, opts, saName, cmName)
 	default: // ScopeOnce and empty string both go here
-		return c.collectOnce(ctx, clients, opts)
+		return c.collectOnce(ctx, clients, opts, saName, cmName)
 	}
 }
 
 // collectOnce deploys a single Job and stores the result under "_cluster".
-func (c *jobCollector) collectOnce(ctx context.Context, clients *kube.Clients, opts RunOptions) (map[string]any, error) {
+func (c *jobCollector) collectOnce(ctx context.Context, clients *kube.Clients, opts RunOptions, saName, cmName string) (map[string]any, error) {
 	jobName := safeJobName(c.cfg.Name, "")
 
-	data, err := c.runJob(ctx, clients, opts, jobName, "")
+	data, err := c.runJob(ctx, clients, opts, jobName, "", saName, cmName)
 	if err != nil {
 		return map[string]any{CollectorDataScope: map[string]any{"_error": err.Error()}}, nil
 	}
@@ -77,7 +109,7 @@ func (c *jobCollector) collectOnce(ctx context.Context, clients *kube.Clients, o
 
 // collectPerNode lists all schedulable nodes and deploys one Job per node
 // concurrently. Results are keyed by node name.
-func (c *jobCollector) collectPerNode(ctx context.Context, clients *kube.Clients, opts RunOptions) (map[string]any, error) {
+func (c *jobCollector) collectPerNode(ctx context.Context, clients *kube.Clients, opts RunOptions, saName, cmName string) (map[string]any, error) {
 	nodeList, err := clients.Core.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
@@ -95,7 +127,7 @@ func (c *jobCollector) collectPerNode(ctx context.Context, clients *kube.Clients
 		go func() {
 			defer wg.Done()
 			jobName := safeJobName(c.cfg.Name, nodeName)
-			data, err := c.runJob(ctx, clients, opts, jobName, nodeName)
+			data, err := c.runJob(ctx, clients, opts, jobName, nodeName, saName, cmName)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -111,8 +143,8 @@ func (c *jobCollector) collectPerNode(ctx context.Context, clients *kube.Clients
 
 // runJob creates a Job, waits for it to complete, reads its logs, optionally
 // deletes it, and returns the parsed JSON output.
-func (c *jobCollector) runJob(ctx context.Context, clients *kube.Clients, opts RunOptions, jobName, nodeName string) (map[string]any, error) {
-	job := c.buildJob(jobName, nodeName, opts.Namespace)
+func (c *jobCollector) runJob(ctx context.Context, clients *kube.Clients, opts RunOptions, jobName, nodeName, saName, cmName string) (map[string]any, error) {
+	job := c.buildJob(jobName, nodeName, opts.Namespace, saName, cmName)
 
 	if _, err := clients.Core.BatchV1().Jobs(opts.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
 		return nil, fmt.Errorf("create job %q: %w", jobName, err)
@@ -145,7 +177,11 @@ func (c *jobCollector) runJob(ctx context.Context, clients *kube.Clients, opts R
 }
 
 // buildJob constructs the batch/v1 Job spec for the collector config.
-func (c *jobCollector) buildJob(jobName, nodeName, namespace string) *batchv1.Job {
+// saName is the ServiceAccount name to assign to the pod; empty string leaves
+// the pod using the namespace default ServiceAccount.
+// cmName is the name of the ConfigMap holding script files; empty string means
+// no scripts are mounted.
+func (c *jobCollector) buildJob(jobName, nodeName, namespace, saName, cmName string) *batchv1.Job {
 	outputPath := c.cfg.ResolvedOutputPath()
 
 	// Build the command list: mkdir for the output dir, user commands, then
@@ -171,22 +207,52 @@ func (c *jobCollector) buildJob(jobName, nodeName, namespace string) *batchv1.Jo
 	}
 
 	privileged := c.cfg.Privileged
+
+	// If scripts are declared and a ConfigMap was created, mount each script
+	// into the container at its declared MountPath via a subPath volume mount.
+	var volumeMounts []corev1.VolumeMount
+	var volumes []corev1.Volume
+	if cmName != "" && len(c.cfg.Scripts) > 0 {
+		volumes = append(volumes, corev1.Volume{
+			Name: "collector-scripts",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
+				},
+			},
+		})
+		for _, s := range c.cfg.Scripts {
+			if s.Content == "" {
+				continue
+			}
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "collector-scripts",
+				MountPath: s.MountPath,
+				SubPath:   scriptDataKey(s.MountPath),
+				ReadOnly:  true,
+			})
+		}
+	}
+
 	container := corev1.Container{
-		Name:    "collector",
-		Image:   c.cfg.Image,
-		Command: []string{"/bin/sh", "-c", shellCmd},
-		Env:     env,
+		Name:         "collector",
+		Image:        c.cfg.Image,
+		Command:      []string{"/bin/sh", "-c", shellCmd},
+		Env:          env,
+		VolumeMounts: volumeMounts,
 		SecurityContext: &corev1.SecurityContext{
 			Privileged: &privileged,
 		},
 	}
 
 	podSpec := corev1.PodSpec{
-		Containers:    []corev1.Container{container},
-		RestartPolicy: corev1.RestartPolicyNever,
-		HostPID:       c.cfg.HostPID,
-		HostNetwork:   c.cfg.HostNetwork,
-		Tolerations:   toK8sTolerations(c.cfg.Tolerations),
+		Volumes:            volumes,
+		Containers:         []corev1.Container{container},
+		RestartPolicy:      corev1.RestartPolicyNever,
+		HostPID:            c.cfg.HostPID,
+		HostNetwork:        c.cfg.HostNetwork,
+		Tolerations:        toK8sTolerations(c.cfg.Tolerations),
+		ServiceAccountName: saName,
 	}
 
 	if nodeName != "" {

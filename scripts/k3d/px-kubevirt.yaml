@@ -1,0 +1,23 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: kvirtbp-k3s-kubevirt
+# ARCHITECTURE: x86_64 (amd64) ONLY.
+# Portworx px-runc is an x86_64 binary. Cannot run under Rosetta 2 on
+# Apple Silicon because oci-monitor execs it via nsenter outside the Docker
+# emulation layer. Use an x86_64 Linux host or cloud VM.
+servers: 1
+agents: 3
+options:
+  k3s:
+    extraArgs:
+      # Disable the bundled ingress controller — not needed for this lab and
+      # reduces startup time and resource consumption.
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - server:*
+      # Disable the k3s local-path provisioner so it does not race with the
+      # Portworx CSI provisioner when binding PVCs.
+      - arg: "--disable=local-storage"
+        nodeFilters:
+          - server:*

@@ -97,8 +97,15 @@ that can be passed to 'kvirtbp scan --collector-data <file>'.`,
 				return fmt.Errorf("connect to cluster: %w", err)
 			}
 
-			if err := ensureNamespace(ctx, clients, collectorNamespace); err != nil {
+			nsCreated, err := ensureNamespace(ctx, clients, collectorNamespace)
+			if err != nil {
 				return fmt.Errorf("ensure namespace %q: %w", collectorNamespace, err)
+			}
+			if !noCleanup && nsCreated {
+				defer func() {
+					_ = clients.Core.CoreV1().Namespaces().Delete(
+						context.Background(), collectorNamespace, metav1.DeleteOptions{})
+				}()
 			}
 
 			opts := collector.RunOptions{
@@ -168,13 +175,14 @@ func isRemoteURL(s string) bool {
 }
 
 // ensureNamespace creates ns if it does not already exist.
-func ensureNamespace(ctx context.Context, clients *kube.Clients, ns string) error {
+// It returns (true, nil) when ns was created, (false, nil) when it already existed.
+func ensureNamespace(ctx context.Context, clients *kube.Clients, ns string) (bool, error) {
 	_, err := clients.Core.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 	if err == nil {
-		return nil // already exists
+		return false, nil // already exists
 	}
 	if !errors.IsNotFound(err) {
-		return fmt.Errorf("get namespace %q: %w", ns, err)
+		return false, fmt.Errorf("get namespace %q: %w", ns, err)
 	}
 
 	namespace := &corev1.Namespace{
@@ -187,9 +195,9 @@ func ensureNamespace(ctx context.Context, clients *kube.Clients, ns string) erro
 	}
 	_, createErr := clients.Core.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
 	if createErr != nil && !errors.IsAlreadyExists(createErr) {
-		return fmt.Errorf("create namespace %q: %w", ns, createErr)
+		return false, fmt.Errorf("create namespace %q: %w", ns, createErr)
 	}
-	return nil
+	return true, nil
 }
 
 // runCollectors executes all collectors concurrently and aggregates results.

@@ -16,7 +16,10 @@ const (
 // defaultOutputPath is the path inside the collector pod container where
 // commands write their output. The CLI appends "cat <outputPath>" as the
 // final container command so pod logs contain only the clean JSON payload.
-const defaultOutputPath = "/kvirtbp/output.json"
+// /tmp/kvirtbp/ is used because /tmp is world-writable in every container
+// image; writing to a custom top-level directory like /kvirtbp/ requires
+// that directory to exist and be writable in the image.
+const defaultOutputPath = "/tmp/kvirtbp/output.json"
 
 // CollectorConfig declares a custom pod collector, either in a bundle's
 // metadata.json or in a standalone --collector-config file.
@@ -39,7 +42,7 @@ type CollectorConfig struct {
 	Scope CollectorScope `json:"scope"`
 
 	// OutputPath is the in-pod file path where commands write JSON output.
-	// Defaults to /kvirtbp/output.json.
+	// Defaults to /tmp/kvirtbp/output.json.
 	OutputPath string `json:"outputPath,omitempty"`
 
 	// TimeoutSeconds is the per-collector deadline in seconds. 0 means use
@@ -65,6 +68,43 @@ type CollectorConfig struct {
 	// be scheduled on nodes with matching taints (e.g. control-plane nodes).
 	// Use {"operator": "Exists"} to tolerate all taints on a node.
 	Tolerations []CollectorToleration `json:"tolerations,omitempty"`
+
+	// RBAC declares Kubernetes RBAC resources the framework should create
+	// before launching the collector Job. When set, the framework creates a
+	// ServiceAccount, ClusterRole, and ClusterRoleBinding named after the
+	// collector and wires the ServiceAccount into the Job pod spec.
+	// Resources are cleaned up after the job completes (unless SkipCleanup).
+	RBAC *CollectorRBAC `json:"rbac,omitempty"`
+
+	// Scripts is a list of script files the framework should mount into the
+	// Job pod via a ConfigMap. Each entry references a file in the bundle
+	// directory (File) and declares where it should appear inside the pod
+	// (MountPath). The framework creates the ConfigMap before launching the
+	// Job and deletes it afterwards (unless SkipCleanup).
+	// Content is populated by the framework at load time and is not stored
+	// in metadata.json.
+	Scripts []CollectorScript `json:"scripts,omitempty"`
+}
+
+// CollectorRBAC declares the RBAC resources the framework should create
+// automatically before running the collector Job.
+type CollectorRBAC struct {
+	// Rules is the list of policy rules granted to the collector's
+	// ServiceAccount. Maps directly to rbacv1.PolicyRule.
+	Rules []CollectorPolicyRule `json:"rules"`
+}
+
+// CollectorPolicyRule mirrors rbacv1.PolicyRule without importing k8s types
+// into the config schema.
+type CollectorPolicyRule struct {
+	// APIGroups is the list of API groups. Use "" for the core group.
+	APIGroups []string `json:"apiGroups"`
+
+	// Resources is the list of resource types (e.g. "storageclasses", "pods").
+	Resources []string `json:"resources"`
+
+	// Verbs is the list of allowed operations (e.g. "get", "list").
+	Verbs []string `json:"verbs"`
 }
 
 // CollectorToleration is a simplified representation of a Kubernetes
@@ -84,6 +124,24 @@ type CollectorToleration struct {
 	// Effect is the taint effect to match: "NoSchedule", "NoExecute",
 	// "PreferNoSchedule", or empty string to match all effects.
 	Effect string `json:"effect,omitempty"`
+}
+
+// CollectorScript pairs a bundle-relative source file with the path where it
+// should be mounted inside the collector pod. The framework creates a
+// Kubernetes ConfigMap from the script content and mounts it as a volume.
+type CollectorScript struct {
+	// File is the path to the script file relative to the bundle directory.
+	// This field is set in metadata.json.
+	File string `json:"file"`
+
+	// MountPath is the absolute path inside the pod container where the
+	// script will be available at runtime.
+	MountPath string `json:"mountPath"`
+
+	// Content holds the script text. It is populated by the framework when
+	// loading a bundle (read from File) and is intentionally omitted from
+	// metadata.json serialisation.
+	Content string `json:"content,omitempty"`
 }
 
 // ResolvedOutputPath returns OutputPath if set, otherwise the package default.

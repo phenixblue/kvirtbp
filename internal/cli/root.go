@@ -23,7 +23,6 @@ func NewRootCmd() *cobra.Command {
 			if outputFlag != "" && outputFlag != "table" && outputFlag != "json" {
 				return errors.New("--output must be one of: table, json")
 			}
-			_ = cfgFile
 			return nil
 		},
 	}
@@ -33,7 +32,7 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&kubeconfigPath, "kubeconfig", "", "Path to kubeconfig file")
 	root.PersistentFlags().StringVar(&kubeContext, "context", "", "Kubernetes context override")
 
-	root.AddCommand(newScanCmd(&outputFlag, &kubeconfigPath, &kubeContext))
+	root.AddCommand(newScanCmd(&outputFlag, &kubeconfigPath, &kubeContext, &cfgFile))
 	root.AddCommand(newCollectCmd(&kubeconfigPath, &kubeContext))
 	root.AddCommand(newChecksCmd())
 	root.AddCommand(newRunbookCmd())
@@ -49,8 +48,8 @@ func NewRootCmd() *cobra.Command {
 	return root
 }
 
-func loadConfigWithOverride(outputOverride string) (config.Config, error) {
-	cfg, err := config.Load()
+func loadConfigWithOverride(outputOverride, configPath string) (config.Config, error) {
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return config.Config{}, err
 	}

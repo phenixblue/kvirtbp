@@ -192,13 +192,32 @@ func ResourceTypesFromBundle(bundlePath string) ([]string, error) {
 }
 
 // CollectorsFromBundle reads the metadata.json of a policy bundle and returns
-// the collector configurations declared by the bundle. Returns nil (no error)
-// when the bundle has no metadata or no collectors declared.
+// the collector configurations declared by the bundle. Script files referenced
+// by scripts[].file are read from the bundle directory and their content is
+// embedded into the returned configs so the framework can create the
+// corresponding ConfigMaps without needing the bundle path at runtime.
+// Returns nil (no error) when the bundle has no metadata or no collectors declared.
 func CollectorsFromBundle(bundlePath string) ([]collector.CollectorConfig, error) {
 	md, err := readBundleMetadata(bundlePath)
 	if err != nil {
 		return nil, err
 	}
+
+	// Resolve script file contents relative to the bundle directory.
+	for i := range md.Collectors {
+		for j := range md.Collectors[i].Scripts {
+			s := &md.Collectors[i].Scripts[j]
+			if s.File == "" || s.Content != "" {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(bundlePath, s.File))
+			if readErr != nil {
+				return nil, fmt.Errorf("read script %q for collector %q: %w", s.File, md.Collectors[i].Name, readErr)
+			}
+			s.Content = string(content)
+		}
+	}
+
 	return md.Collectors, nil
 }
 

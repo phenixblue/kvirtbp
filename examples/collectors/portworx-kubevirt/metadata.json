@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "v1alpha1",
+  "policyVersion": "0.1.0",
+  "collectors": [
+    {
+      "name": "portworx-kubevirt",
+      "image": "python:3.12-alpine",
+      "commands": [
+        "python3 /scripts/collect.py"
+      ],
+      "scripts": [
+        {
+          "file": "collect.py",
+          "mountPath": "/scripts/collect.py"
+        }
+      ],
+      "scope": "once",
+      "tolerations": [{"operator": "Exists"}],
+      "rbac": {
+        "rules": [
+          {
+            "apiGroups": ["storage.k8s.io"],
+            "resources": ["storageclasses"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["persistentvolumeclaims"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": ["core.libopenstorage.org"],
+            "resources": ["storageclusters"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": ["cdi.kubevirt.io"],
+            "resources": ["storageprofiles"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["pods"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["pods/exec"],
+            "verbs": ["get", "create"]
+          },
+          {
+            "apiGroups": ["kubevirt.io"],
+            "resources": ["virtualmachines"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": ["config.openshift.io"],
+            "resources": ["clusterversions"],
+            "verbs": ["get"]
+          },
+          {
+            "apiGroups": ["hco.kubevirt.io"],
+            "resources": ["hyperconvergeds"],
+            "verbs": ["get", "list"]
+          }
+        ]
+      }
+    }
+  ]
+}

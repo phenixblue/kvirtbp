@@ -1,0 +1,14 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# 1 control-plane + 3 workers is the Portworx minimum for repl=2 with safe headroom.
+# Resource recommendation for Docker Desktop: 16 GB RAM, 6 CPU, 80 GB disk.
+#
+# ARCHITECTURE: x86_64 (amd64) ONLY.
+# Portworx px-runc is an x86_64 binary. It cannot run under Rosetta 2 on
+# Apple Silicon because oci-monitor execs it via nsenter outside the Docker
+# emulation layer. Use an x86_64 Linux host or cloud VM.
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

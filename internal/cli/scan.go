@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/phenixblue/kvirtbp/internal/bundle"
 	"github.com/phenixblue/kvirtbp/internal/checks"
 	"github.com/phenixblue/kvirtbp/internal/collector"
@@ -35,7 +37,7 @@ func (e *ExitCodeError) Error() string {
 	return fmt.Sprintf("scan failed with exit code %d", e.Code)
 }
 
-func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string) *cobra.Command {
+func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string, cfgFile *string) *cobra.Command {
 	var includeChecks []string
 	var excludeChecks []string
 	var categories []string
@@ -62,7 +64,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 		Short: "Run best-practice checks",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := time.Now()
-			cfg, err := loadConfigWithOverride(*outputFlag)
+			cfg, err := loadConfigWithOverride(*outputFlag, *cfgFile)
 			if err != nil {
 				return err
 			}
@@ -113,15 +115,24 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 				return err
 			}
 
+			parsedInclude, parsedExclude := checks.ParseCheckFlags(includeChecks)
+			parsedExclude = append(parsedExclude, excludeChecks...)
+			parsedExclude = append(parsedExclude, cfg.ExcludeChecks...)
+
 			filter := checks.Filter{
-				IncludeIDs: includeChecks,
-				ExcludeIDs: excludeChecks,
+				IncludeIDs: parsedInclude,
+				ExcludeIDs: parsedExclude,
 				Categories: categories,
 				Severities: parsedSeverities,
 			}
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), cfg.Timeout)
 			defer cancel()
+
+			// --engine flag takes precedence; fall back to config file value.
+			if !cmd.Flags().Changed("engine") && cfg.Engine != "" {
+				engineName = cfg.Engine
+			}
 
 			evaluator, err := getEvaluator(engineName)
 			if err != nil {
@@ -173,6 +184,16 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 				}
 				if snap.Collectors == nil {
 					snap.Collectors = make(map[string]any)
+				}
+				nsCreated, nsErr := ensureNamespace(ctx, clients, collectorNamespace)
+				if nsErr != nil {
+					return fmt.Errorf("ensure collector namespace %q: %w", collectorNamespace, nsErr)
+				}
+				if !noCollectorCleanup && nsCreated {
+					defer func() {
+						_ = clients.Core.CoreV1().Namespaces().Delete(
+							context.Background(), collectorNamespace, metav1.DeleteOptions{})
+					}()
 				}
 				inlineOpts := collector.RunOptions{
 					Namespace:     collectorNamespace,
@@ -276,7 +297,7 @@ func newScanCmd(outputFlag *string, kubeconfigPath *string, kubeContext *string)
 	cmd.Flags().StringSliceVar(&severities, "severity", nil, "Include only specific severities: info|warning|error")
 	cmd.Flags().StringSliceVar(&includeNamespaces, "namespace", nil, "Limit namespace-scoped coverage checks to matching namespaces (supports glob patterns like tenant-*)")
 	cmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespace", nil, "Exclude matching namespaces from namespace-scoped coverage checks (supports glob patterns)")
-	cmd.Flags().StringVar(&engineName, "engine", "go", "Evaluator engine: go|rego")
+	cmd.Flags().StringVar(&engineName, "engine", "", "Evaluator engine: go|rego (default: go, or value from config file)")
 	cmd.Flags().StringVar(&policyFile, "policy-file", "", "Path to Rego policy file (used with --engine rego)")
 	cmd.Flags().StringVar(&policyBundle, "policy-bundle", "", "Path or HTTPS URL to a Rego policy bundle directory or .tar.gz archive (used with --engine rego)")
 	cmd.Flags().StringVar(&bundleSubdir, "bundle-subdir", "", "Subdirectory within the bundle archive that contains metadata.json (for monorepo layouts)")

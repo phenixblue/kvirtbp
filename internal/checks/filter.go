@@ -12,6 +12,24 @@ type Filter struct {
 	Severities []Severity
 }
 
+// ParseCheckFlags splits --check flag values into include and exclude lists.
+// A value with a trailing "-" (e.g. "prod-px-vm-disk-blocksize-") is treated
+// as an exclusion; all other values are treated as inclusions.
+func ParseCheckFlags(values []string) (include, exclude []string) {
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if strings.HasSuffix(v, "-") {
+			exclude = append(exclude, strings.TrimSuffix(v, "-"))
+		} else {
+			include = append(include, v)
+		}
+	}
+	return
+}
+
 func ParseSeverities(values []string) ([]Severity, error) {
 	if len(values) == 0 {
 		return nil, nil

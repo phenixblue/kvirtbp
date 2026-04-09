@@ -1,15 +1,12 @@
 # kapture
 
-`kapture` is a Golang CLI for running production-readiness, security, and availability checks against Kubernetes clusters with KubeVirt.
+`kapture` is a Kubernetes cluster inspection CLI that collects runtime data and evaluates it against defined policy checks.
 
-## Current status
+The functionality of the CLI is customizable via the `Collector` model
 
-Milestone 1 foundation is implemented:
+`Collectors` are short-lived Kubernetes Jobs that `kapture` deploys to gather node or cluster-level data that can't be obtained through the standard Kubernetes API alone — things like hugepage info, host-level metrics, or storage state.
 
-- Cobra CLI scaffold (`scan`, `checks`, `version`)
-- Configuration loading with environment-variable support
-- Report rendering in `table` and `json`
-- Initial baseline control catalog across production-readiness, security, and availability
+Collectors are declared by a Policy Bundle consistung of a metadata.json file that explains specifics about the collector deployment (ie. container image, commands to run, permissions, etc.) and Rego policy file(s) to define checks. These Bundles can be hosted locally or via HTTP. [Read more about Collectors here](docs/collectors.md)
 
 ## Quickstart
 
@@ -210,9 +207,3 @@ Useful environment variables:
 Manual CI execution:
 
 - Use GitHub Actions workflow `e2e-manual` (`workflow_dispatch`) to run the same pass/fail profiles on demand.
-
-## Roadmap notes
-
-- v1 includes hybrid policy execution (Go + Rego/OPA)
-- The `collect` subcommand and collector framework are included in v1
-- Snapshot bundle export and visualization UI are post-v1 roadmap items
